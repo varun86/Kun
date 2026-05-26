@@ -377,6 +377,13 @@ export function WriteWorkspaceView({
       : ''
   const fileGuardDetail = renderSafety.notice === 'large-file' ? t('writeLargeFileSafeModeSub') : ''
 
+  useWriteSplitScrollSync({
+    enabled: workspaceReady && previewMode === 'split' && activeFileIsText,
+    editorRootRef: editorPaneRef,
+    previewRef: previewPaneRef,
+    rebindKey: activeFilePath ?? 'write-preview'
+  })
+
   const showExportNotice = (notice: WriteNotice): void => {
     setExportNotice(notice)
   }
@@ -659,13 +666,6 @@ export function WriteWorkspaceView({
   const liveModeActive = previewMode === 'live' && renderSafety.livePreviewEnabled
   const sourceModeActive = previewMode === 'source' || (previewMode === 'live' && !renderSafety.livePreviewEnabled)
   const editorAppearance = sourceModeActive ? 'source' : 'live'
-
-  useWriteSplitScrollSync({
-    enabled: previewMode === 'split' && activeFileIsText,
-    editorRootRef: editorPaneRef,
-    previewRef: previewPaneRef,
-    rebindKey: activeFilePath ?? 'write-preview'
-  })
 
   const renderModeButton = (
     nextMode: WritePreviewMode,
