@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from 'electron'
+import { app, autoUpdater as nativeAutoUpdater, BrowserWindow } from 'electron'
 import { existsSync, readFileSync } from 'node:fs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
@@ -31,6 +31,7 @@ let configuredChannel: GuiUpdateChannel = normalizeGuiUpdateChannel(
 let configuredFeedUrl = ''
 let getSelectedChannel: (() => GuiUpdateChannel | Promise<GuiUpdateChannel>) | null = null
 let beforeInstallUpdate: (() => void | Promise<void>) | null = null
+let beforeInstallUpdatePromise: Promise<void> | null = null
 let backgroundCheckTimer: NodeJS.Timeout | null = null
 let backgroundCheckPromise: Promise<void> | null = null
 
@@ -259,6 +260,19 @@ function emitGuiUpdateState(state: GuiUpdateState): void {
   win.webContents.send('gui:update-state', state)
 }
 
+function runBeforeInstallUpdate(): Promise<void> {
+  if (!beforeInstallUpdate) return Promise.resolve()
+  if (!beforeInstallUpdatePromise) {
+    beforeInstallUpdatePromise = Promise.resolve()
+      .then(() => beforeInstallUpdate?.())
+      .then(() => undefined)
+      .finally(() => {
+        beforeInstallUpdatePromise = null
+      })
+  }
+  return beforeInstallUpdatePromise
+}
+
 function clearBackgroundCheckTimer(): void {
   if (backgroundCheckTimer) {
     clearTimeout(backgroundCheckTimer)
@@ -448,6 +462,12 @@ export function initializeGuiUpdater(
     emitGuiUpdateState({ status: 'error', info: lastInfo ?? undefined, message, code: 'unknown' })
   })
 
+  nativeAutoUpdater?.on?.('before-quit-for-update', () => {
+    void runBeforeInstallUpdate().catch((error) => {
+      console.warn('[deepseek-gui updater] failed to stop runtimes before update quit:', error)
+    })
+  })
+
   void scheduleNextBackgroundCheck()
 }
 
@@ -547,7 +567,7 @@ export async function installGuiUpdate(): Promise<GuiUpdateInstallResult> {
       }
     }
     emitGuiUpdateState({ status: 'installing', info: lastInfo ?? undefined })
-    await beforeInstallUpdate?.()
+    await runBeforeInstallUpdate()
     autoUpdater.quitAndInstall(false, true)
     return { ok: true }
   } catch (e) {

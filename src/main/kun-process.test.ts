@@ -236,13 +236,16 @@ describe('syncGuiManagedKunConfig', () => {
       transport: 'stdio',
       command: '/tmp/electron',
       args: [
-        '/tmp/deepseek-gui-test-app',
+        '/tmp/deepseek-gui-test-app/out/main/claw-schedule-mcp-node-entry.js',
         '--gui-schedule-mcp-server',
         '--base-url',
         'http://127.0.0.1:9788',
         '--secret',
         'top-secret'
       ],
+      env: {
+        ELECTRON_RUN_AS_NODE: '1'
+      },
       trustScope: 'user'
     })
   })
@@ -491,7 +494,16 @@ describe('syncGuiManagedKunConfig', () => {
     expect(parsed.capabilities.mcp.enabled).toBe(false)
     expect(parsed.capabilities.mcp.servers.gui_schedule).toMatchObject({
       transport: 'stdio',
-      command: '/tmp/electron'
+      command: '/tmp/electron',
+      args: [
+        '/tmp/deepseek-gui-test-app/out/main/claw-schedule-mcp-node-entry.js',
+        '--gui-schedule-mcp-server',
+        '--base-url',
+        'http://127.0.0.1:8788'
+      ],
+      env: {
+        ELECTRON_RUN_AS_NODE: '1'
+      }
     })
   })
 

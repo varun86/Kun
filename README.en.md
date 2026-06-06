@@ -24,6 +24,23 @@ The goal is not to ship another chat wrapper. The goal is to make DeepSeek feel 
   <img src="src/asset/img/write.gif" alt="Write mode demo" width="49%" style="max-width: 100%;">
 </p>
 
+## More Demos
+
+<p align="center">
+  <img src="src/asset/img/feishu.gif" alt="Feishu connection demo" width="860">
+</p>
+<p align="center"><em>Feishu / Lark / WeChat connection demo.</em></p>
+
+<p align="center">
+  <img src="src/asset/img/sdd.gif" alt="Requirement drafting and planning demo" width="860">
+</p>
+<p align="center"><em>Requirement drafting and planning demo.</em></p>
+
+<p align="center">
+  <img src="src/asset/img/web.gif" alt="Web tools demo" width="860">
+</p>
+<p align="center"><em>Web tools demo.</em></p>
+
 ## Why Kun Delivers High Token ROI
 
 Kun makes token economy the default behavior of the agent loop, not a cleanup step after the fact. It does more than compress text: before each model call, it decides which information is worth entering context.

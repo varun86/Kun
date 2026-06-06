@@ -24,6 +24,23 @@ DeepSeek GUI 是一个面向开发者和高频 AI 工作者的本地桌面工作
   <img src="src/asset/img/write.gif" alt="Write 模式演示" width="49%" style="max-width: 100%;">
 </p>
 
+## 更多演示
+
+<p align="center">
+  <img src="src/asset/img/feishu.gif" alt="飞书连接演示" width="860">
+</p>
+<p align="center"><em>飞书 / Lark / 微信连接演示。</em></p>
+
+<p align="center">
+  <img src="src/asset/img/sdd.gif" alt="新建需求与计划演示" width="860">
+</p>
+<p align="center"><em>新建需求与计划演示。</em></p>
+
+<p align="center">
+  <img src="src/asset/img/web.gif" alt="Web 工具演示" width="860">
+</p>
+<p align="center"><em>Web 工具演示。</em></p>
+
 ## Kun 为什么 Token ROI 高
 
 Kun 把“省 token”做成 agent loop 的默认行为，而不是事后补救。它不只是压缩文本，更是在每一轮调用前判断哪些信息值得进入上下文。

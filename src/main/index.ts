@@ -148,6 +148,8 @@ let store: JsonSettingsStore
 let logDir = ''
 let clawRuntime: ClawRuntime | null = null
 let scheduleRuntime: ScheduleRuntime | null = null
+let managedRuntimesStoppedForQuit = false
+let managedRuntimesStopPromise: Promise<void> | null = null
 
 type GuiUpdaterModule = typeof import('./gui-updater')
 
@@ -160,10 +162,23 @@ function emitClawChannelActivity(payload: { channelId: string; threadId: string 
 }
 
 async function stopManagedRuntimesForQuit(): Promise<void> {
-  scheduleRuntime?.stop()
-  clawRuntime?.stop()
-  stopWeixinBridgeRuntime()
-  await kunRuntimeAdapter.stopAndWait()
+  if (managedRuntimesStoppedForQuit) return
+  await stopManagedRuntimes()
+  managedRuntimesStoppedForQuit = true
+}
+
+async function stopManagedRuntimes(): Promise<void> {
+  if (!managedRuntimesStopPromise) {
+    managedRuntimesStopPromise = (async () => {
+      scheduleRuntime?.stop()
+      clawRuntime?.stop()
+      stopWeixinBridgeRuntime()
+      await kunRuntimeAdapter.stopAndWait()
+    })().finally(() => {
+      managedRuntimesStopPromise = null
+    })
+  }
+  return managedRuntimesStopPromise
 }
 
 async function loadGuiUpdaterModule(): Promise<GuiUpdaterModule> {
@@ -808,7 +823,7 @@ app.whenReady().then(async () => {
 }
 
 app.on('window-all-closed', () => {
-  void kunRuntimeAdapter.stopAndWait().catch((error) => {
+  void stopManagedRuntimes().catch((error) => {
     console.warn('[deepseek-gui] failed to stop Kun runtime:', error)
   })
   if (process.platform !== 'darwin') {
@@ -816,8 +831,15 @@ app.on('window-all-closed', () => {
   }
 })
 
-app.on('before-quit', () => {
-  void stopManagedRuntimesForQuit().catch((error) => {
-    console.warn('[deepseek-gui] failed to stop Kun runtime:', error)
-  })
+app.on('before-quit', (event) => {
+  if (managedRuntimesStoppedForQuit) return
+  event.preventDefault()
+  void stopManagedRuntimesForQuit()
+    .catch((error) => {
+      console.warn('[deepseek-gui] failed to stop Kun runtime:', error)
+      managedRuntimesStoppedForQuit = true
+    })
+    .finally(() => {
+      app.quit()
+    })
 })

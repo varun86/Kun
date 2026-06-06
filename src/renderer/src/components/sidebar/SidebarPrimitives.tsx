@@ -273,6 +273,7 @@ type SidebarTreeRowProps = {
   trailing?: ReactNode
   actions?: ReactNode
   actionsVisibility?: 'hidden' | 'subtle' | 'visible'
+  actionsLayout?: 'inline' | 'overlay'
   className?: string
   buttonClassName?: string
   buttonStyle?: CSSProperties
@@ -290,6 +291,7 @@ export function SidebarTreeRow({
   trailing,
   actions,
   actionsVisibility = 'subtle',
+  actionsLayout = 'inline',
   className,
   buttonClassName,
   buttonStyle
@@ -298,10 +300,14 @@ export function SidebarTreeRow({
   const rail = activeVariant === 'rail'
   const actionsClass =
     actionsVisibility === 'hidden'
-      ? 'opacity-0 group-hover:opacity-100 focus-within:opacity-100'
+      ? 'pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100'
       : actionsVisibility === 'visible'
         ? 'opacity-100'
         : 'opacity-55 group-hover:opacity-100 focus-within:opacity-100'
+  const actionsWrapClass =
+    actionsLayout === 'overlay'
+      ? 'absolute inset-y-0 right-1.5 flex items-center gap-0.5'
+      : 'mr-1.5 flex shrink-0 items-center gap-0.5'
 
   return (
     <div
@@ -340,7 +346,7 @@ export function SidebarTreeRow({
         {children}
       </button>
       {trailing || actions ? (
-        <div className="mr-1.5 flex shrink-0 items-center gap-0.5">
+        <div className={actionsWrapClass}>
           {trailing ?? null}
           {actions ? (
             <div className={cx('flex shrink-0 items-center gap-0.5 transition', actionsClass)}>

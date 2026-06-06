@@ -360,6 +360,7 @@ export function SidebarProjectsSection({
                 className="min-h-[36px] text-[13.5px]"
                 buttonClassName="items-center gap-2 px-2.5 py-2"
                 actionsVisibility="hidden"
+                actionsLayout="overlay"
                 actions={
                   <>
                     <SidebarIconButton
@@ -391,7 +392,7 @@ export function SidebarProjectsSection({
                 )}
                 <span className="min-w-0 flex-1 truncate">{folderName}</span>
                 {workspaceContext ? (
-                  <span className="min-w-0 max-w-[42%] shrink truncate text-[12.5px] text-ds-faint">
+                  <span className="min-w-0 max-w-[42%] shrink truncate text-[12.5px] text-ds-faint transition group-hover:opacity-0 group-focus-within:opacity-0">
                     {workspaceContext}
                   </span>
                 ) : null}
@@ -536,6 +537,7 @@ function ThreadRow({
     <SidebarTreeRow
       active={active}
       actionsVisibility={deleting ? 'visible' : 'hidden'}
+      actionsLayout="overlay"
       actions={
         <>
           <SidebarIconButton
@@ -594,14 +596,20 @@ function ThreadRow({
             {t('sidebarThreadForkBadge')}
           </span>
         ) : null}
-        <span className="shrink-0 text-[12px] leading-4 text-ds-faint tabular-nums">
-          {updatedLabel}
+        <span
+          className={`ml-auto flex shrink-0 items-center gap-1.5 transition ${
+            deleting ? 'opacity-0' : 'group-hover:opacity-0 group-focus-within:opacity-0'
+          }`}
+        >
+          <span className="shrink-0 text-right text-[12px] leading-4 text-ds-faint tabular-nums">
+            {updatedLabel}
+          </span>
+          <ThreadActivityDot
+            running={showRunning}
+            unread={showUnreadDot}
+            unreadLabel={t('sidebarThreadUnread')}
+          />
         </span>
-        <ThreadActivityDot
-          running={showRunning}
-          unread={showUnreadDot}
-          unreadLabel={t('sidebarThreadUnread')}
-        />
       </span>
     </SidebarTreeRow>
   )

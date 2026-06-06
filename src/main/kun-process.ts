@@ -34,6 +34,7 @@ import {
 import {
   buildClawScheduleMcpArgs,
   GUI_SCHEDULE_MCP_SERVER_NAME,
+  resolveClawScheduleMcpCommand,
   type ClawScheduleMcpLaunchConfig
 } from './claw-schedule-mcp-config'
 import { defaultKunDataDir } from './runtime/kun-adapter'
@@ -45,6 +46,8 @@ let childLogCapture: KunChildLogCapture | null = null
 let lastResolvedBinary: string | null = null
 const KUN_READY_PREFIX = 'KUN_READY '
 const KUN_STARTUP_TIMEOUT_MS = 15_000
+const KUN_STOP_GRACE_MS = 5_000
+const KUN_STOP_FORCE_MS = 1_000
 const STDERR_TAIL_MAX_CHARS = 4_000
 const GUI_SCHEDULE_MCP_TIMEOUT_MS = 5_000
 const DEFAULT_KUN_MODEL_PROFILES: Record<string, Record<string, unknown>> = {
@@ -186,7 +189,7 @@ function expandHomePath(path: string): string {
 }
 
 export function isKunChildRunning(): boolean {
-  return child !== null && child.exitCode === null
+  return child !== null && child.exitCode === null && child.signalCode === null
 }
 
 export async function startKunChild(settings: AppSettingsV1): Promise<void> {
@@ -353,9 +356,11 @@ function buildGuiScheduleKunMcpServer(
   return {
     enabled: true,
     transport: 'stdio',
-    command: launch.execPath,
+    command: resolveClawScheduleMcpCommand(launch),
     args: buildClawScheduleMcpArgs(settings, launch),
-    env: {},
+    env: {
+      ELECTRON_RUN_AS_NODE: '1'
+    },
     trustScope: 'user',
     timeoutMs: GUI_SCHEDULE_MCP_TIMEOUT_MS
   }
@@ -566,30 +571,50 @@ export async function stopKunChildAndWait(): Promise<void> {
     }
     return
   }
+  const stoppingChild = child
   const pid = child.pid
   const capture = childLogCapture
-  child.kill('SIGTERM')
-  for (let i = 0; i < 50; i += 1) {
-    if (!isKunChildRunning()) {
-      child = null
-      if (capture) {
-        childLogCapture = null
-        await capture.close()
-      }
-      return
+  if (stoppingChild.exitCode === null && stoppingChild.signalCode === null) {
+    try {
+      stoppingChild.kill('SIGTERM')
+    } catch {
+      /* already gone */
     }
-    await sleep(100)
   }
-  try {
-    if (pid) process.kill(pid, 'SIGKILL')
-  } catch {
-    /* already gone */
+  const exited = await waitForChildExit(stoppingChild, KUN_STOP_GRACE_MS)
+  if (!exited) {
+    try {
+      if (pid) process.kill(pid, 'SIGKILL')
+    } catch {
+      /* already gone */
+    }
+    await waitForChildExit(stoppingChild, KUN_STOP_FORCE_MS)
   }
-  child = null
+  if (child === stoppingChild) child = null
   if (capture) {
     childLogCapture = null
     await capture.close()
   }
+}
+
+function waitForChildExit(process: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (process.exitCode !== null || process.signalCode !== null) return Promise.resolve(true)
+  return new Promise((resolve) => {
+    let settled = false
+    const timer = setTimeout(() => settle(false), timeoutMs)
+    const settle = (exited: boolean): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      process.removeListener('exit', onExit)
+      process.removeListener('error', onError)
+      resolve(exited)
+    }
+    const onExit = (): void => settle(true)
+    const onError = (): void => settle(true)
+    process.once('exit', onExit)
+    process.once('error', onError)
+  })
 }
 
 export async function reclaimKunPort(

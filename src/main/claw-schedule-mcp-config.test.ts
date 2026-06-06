@@ -6,6 +6,8 @@ import {
   buildSyncedClawScheduleMcpJson,
   clawScheduleMcpSettingsChanged,
   removeLegacyClawScheduleTomlConfig,
+  resolveClawScheduleMcpCommand,
+  resolveClawScheduleMcpNodeEntryPath,
   resolveDeepseekConfigPath,
   resolveKunConfigPath,
   resolveKunMcpJsonPath,
@@ -101,20 +103,34 @@ describe('claw schedule MCP config', () => {
         command: 'npx'
       },
       gui_schedule: {
-        command: launch.execPath,
+        command: resolveClawScheduleMcpCommand(launch),
         args: [
-          launch.appPath,
+          resolveClawScheduleMcpNodeEntryPath(launch),
           '--gui-schedule-mcp-server',
           '--base-url',
           'http://127.0.0.1:9787',
           '--secret',
           'top-secret'
         ],
+        env: {
+          ELECTRON_RUN_AS_NODE: '1'
+        },
         url: null,
         enabled: true
       }
     })
     expect(synced.timeouts).toEqual({ connect_timeout: 1 })
+  })
+
+  it('uses the macOS Electron helper for real app bundle paths', () => {
+    expect(resolveClawScheduleMcpCommand(launch, 'darwin')).toBe(
+      '/Applications/DeepSeek GUI.app/Contents/Frameworks/DeepSeek GUI Helper.app/Contents/MacOS/DeepSeek GUI Helper'
+    )
+    expect(resolveClawScheduleMcpCommand({
+      appPath: '/tmp/deepseek-gui-test-app',
+      execPath: '/tmp/electron',
+      isPackaged: false
+    }, 'darwin')).toBe('/tmp/electron')
   })
 
   it('removes legacy config.toml claw_schedule blocks without touching other MCP servers', () => {
@@ -206,8 +222,16 @@ describe('claw schedule MCP config', () => {
           command: '/bin/echo'
         },
         gui_schedule: {
-          command: launch.execPath,
-          args: [launch.appPath, '--gui-schedule-mcp-server', '--base-url', 'http://127.0.0.1:8788']
+          command: resolveClawScheduleMcpCommand(launch),
+          args: [
+            resolveClawScheduleMcpNodeEntryPath(launch),
+            '--gui-schedule-mcp-server',
+            '--base-url',
+            'http://127.0.0.1:8788'
+          ],
+          env: {
+            ELECTRON_RUN_AS_NODE: '1'
+          }
         }
       }
     })
@@ -230,7 +254,10 @@ describe('claw schedule MCP config', () => {
     expect((synced.servers as Record<string, unknown>).claw_schedule).toBeUndefined()
     expect(synced.servers).toMatchObject({
       gui_schedule: {
-        command: launch.execPath
+        command: resolveClawScheduleMcpCommand(launch),
+        env: {
+          ELECTRON_RUN_AS_NODE: '1'
+        }
       }
     })
   })

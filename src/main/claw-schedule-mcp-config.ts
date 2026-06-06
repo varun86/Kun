@@ -1,12 +1,14 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import type { AppSettingsV1 } from '../shared/app-settings'
 
 const CLAW_SCHEDULE_MCP_MARKER_START = '# DeepSeek GUI plugin:mcp:claw-schedule START'
 const CLAW_SCHEDULE_MCP_MARKER_END = '# DeepSeek GUI plugin:mcp:claw-schedule END'
 export const GUI_SCHEDULE_MCP_SERVER_NAME = 'gui_schedule'
 const LEGACY_CLAW_SCHEDULE_MCP_SERVER_NAME = 'claw_schedule'
+const GUI_SCHEDULE_MCP_NODE_ENTRY = 'out/main/claw-schedule-mcp-node-entry.js'
+const ELECTRON_RUN_AS_NODE_ENV = { ELECTRON_RUN_AS_NODE: '1' }
 
 type JsonRecord = Record<string, unknown>
 
@@ -45,11 +47,12 @@ export function buildClawScheduleMcpArgs(
   settings: AppSettingsV1,
   launch: ClawScheduleMcpLaunchConfig
 ): string[] {
-  const args: string[] = []
-  if (!launch.isPackaged) {
-    args.push(launch.appPath)
-  }
-  args.push('--gui-schedule-mcp-server', '--base-url', `http://127.0.0.1:${settings.schedule.internal.port}`)
+  const args: string[] = [
+    resolveClawScheduleMcpNodeEntryPath(launch),
+    '--gui-schedule-mcp-server',
+    '--base-url',
+    `http://127.0.0.1:${settings.schedule.internal.port}`
+  ]
   const secret = settings.schedule.internal.secret.trim()
   if (secret) {
     args.push('--secret', secret)
@@ -57,14 +60,38 @@ export function buildClawScheduleMcpArgs(
   return args
 }
 
+export function resolveClawScheduleMcpNodeEntryPath(launch: ClawScheduleMcpLaunchConfig): string {
+  return join(launch.appPath, GUI_SCHEDULE_MCP_NODE_ENTRY)
+}
+
+export function resolveClawScheduleMcpCommand(
+  launch: ClawScheduleMcpLaunchConfig,
+  platform: NodeJS.Platform = process.platform
+): string {
+  if (platform !== 'darwin') return launch.execPath
+  if (!launch.execPath.includes('/Contents/MacOS/')) return launch.execPath
+
+  const appContentsDir = dirname(dirname(launch.execPath))
+  const appName = basename(launch.execPath)
+  const helperName = `${appName} Helper`
+  return join(
+    appContentsDir,
+    'Frameworks',
+    `${helperName}.app`,
+    'Contents',
+    'MacOS',
+    helperName
+  )
+}
+
 export function buildClawScheduleMcpServerConfig(
   settings: AppSettingsV1,
   launch: ClawScheduleMcpLaunchConfig
 ): JsonRecord {
   return {
-    command: launch.execPath,
+    command: resolveClawScheduleMcpCommand(launch),
     args: buildClawScheduleMcpArgs(settings, launch),
-    env: {},
+    env: ELECTRON_RUN_AS_NODE_ENV,
     url: null,
     connect_timeout: null,
     execute_timeout: null,
