@@ -1,4 +1,4 @@
-import { dialog, ipcMain, shell, type BrowserWindow, type WebContents } from 'electron'
+import { app, dialog, ipcMain, shell, type BrowserWindow, type WebContents } from 'electron'
 import { watch, type FSWatcher } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
@@ -17,10 +17,12 @@ import {
 import type {
   ClawImInstallPollResult,
   ClawImInstallQrResult,
+  DesktopCommand,
   RuntimeRequestResult,
   SystemNotificationResult,
   TurnCompleteNotificationPayload,
   UpstreamModelsResult,
+  WindowsTitleBarTheme,
   WorkspacePickResult
 } from '../../shared/ds-gui-api'
 import type { GuiUpdateDownloadResult, GuiUpdateInfo, GuiUpdateInstallResult, GuiUpdateState } from '../../shared/gui-update'
@@ -29,6 +31,7 @@ import {
   clawImInstallPollPayloadSchema,
   clawTaskFromTextPayloadSchema,
   deepseekConfigContentSchema,
+  desktopCommandSchema,
   defaultPathSchema,
   gitBranchPayloadSchema,
   guiUpdateChannelSchema,
@@ -55,6 +58,7 @@ import {
   writeExportPayloadSchema,
   writeRichClipboardPayloadSchema,
   writeInlineCompletionPayloadSchema,
+  windowsTitleBarThemeSchema,
   workspaceRootSchema
 } from './app-ipc-schemas'
 import type { JsonSettingsStore } from '../settings-store'
@@ -129,6 +133,78 @@ function parseIpcPayload<T>(channel: string, schema: z.ZodType<T>, payload: unkn
   if (parsed.success) return parsed.data
   const issue = parsed.error.issues[0]
   throw new Error(`Invalid payload for ${channel}: ${issue?.message ?? 'Bad request.'}`)
+}
+
+const DESKTOP_TITLEBAR_OVERLAY_HEIGHT = 40
+
+function desktopTitleBarOverlayForTheme(theme: WindowsTitleBarTheme): Electron.TitleBarOverlayOptions {
+  return {
+    color: theme === 'dark' ? '#101010' : '#f5f7fa',
+    symbolColor: theme === 'dark' ? '#ffffff' : '#222222',
+    height: DESKTOP_TITLEBAR_OVERLAY_HEIGHT
+  }
+}
+
+function runDesktopCommand(
+  command: DesktopCommand,
+  sender: WebContents,
+  getMainWindow: () => BrowserWindow | null
+): void {
+  const mainWindow = getMainWindow()
+  const contents = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : sender
+
+  switch (command) {
+    case 'undo':
+      contents.undo()
+      return
+    case 'redo':
+      contents.redo()
+      return
+    case 'cut':
+      contents.cut()
+      return
+    case 'copy':
+      contents.copy()
+      return
+    case 'paste':
+      contents.paste()
+      return
+    case 'selectAll':
+      contents.selectAll()
+      return
+    case 'reload':
+      contents.reload()
+      return
+    case 'zoomIn':
+      contents.setZoomLevel(contents.getZoomLevel() + 1)
+      return
+    case 'zoomOut':
+      contents.setZoomLevel(contents.getZoomLevel() - 1)
+      return
+    case 'resetZoom':
+      contents.setZoomLevel(0)
+      return
+    case 'toggleDevTools':
+      contents.toggleDevTools()
+      return
+    case 'minimize':
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.minimize()
+      return
+    case 'toggleMaximize':
+      if (!mainWindow || mainWindow.isDestroyed()) return
+      if (mainWindow.isMaximized()) {
+        mainWindow.unmaximize()
+      } else {
+        mainWindow.maximize()
+      }
+      return
+    case 'close':
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close()
+      return
+    case 'quit':
+      app.quit()
+      return
+  }
 }
 
 export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): void {
@@ -638,6 +714,23 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
   ipcMain.handle('write:inline-completion-debug:clear', async () => {
     clearWriteInlineCompletionDebugEntries()
     return true
+  })
+  ipcMain.handle('desktop:command', async (event, command: unknown) => {
+    runDesktopCommand(
+      parseIpcPayload('desktop:command', desktopCommandSchema, command),
+      event.sender,
+      getMainWindow
+    )
+  })
+  ipcMain.handle('windows:titlebar-theme', async (_, theme: unknown) => {
+    if (process.platform === 'darwin') return
+    const mainWindow = getMainWindow()
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    mainWindow.setTitleBarOverlay(
+      desktopTitleBarOverlayForTheme(
+        parseIpcPayload('windows:titlebar-theme', windowsTitleBarThemeSchema, theme)
+      )
+    )
   })
   ipcMain.handle('shell:open-external', async (_, url: unknown) => {
     const validatedUrl = parseIpcPayload('shell:open-external', shellOpenExternalUrlSchema, url)

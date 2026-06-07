@@ -62,6 +62,7 @@ import { isKunHealthResponseBody } from './kun-health'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const APP_USER_MODEL_ID = 'com.xingyuzhong.deepseekgui'
+const DESKTOP_TITLEBAR_OVERLAY_HEIGHT = 40
 const startupTraceEnabled = process.env.DEEPSEEK_GUI_STARTUP_TRACE === '1'
 const startupTraceStart = Date.now()
 
@@ -253,6 +254,14 @@ function createAppIcon(source: string): Electron.NativeImage {
   return source.startsWith('data:')
     ? nativeImage.createFromDataURL(source)
     : nativeImage.createFromPath(source)
+}
+
+function desktopTitleBarOverlayOptions(): Electron.TitleBarOverlayOptions {
+  return {
+    color: '#f5f7fa',
+    symbolColor: '#222222',
+    height: DESKTOP_TITLEBAR_OVERLAY_HEIGHT
+  }
 }
 
 const appIcon = createAppIcon(deepseekLogoPng)
@@ -531,14 +540,17 @@ async function ensureKunRuntime(settings: AppSettingsV1): Promise<void> {
 function createWindow(): void {
   traceStartup('createWindow:start')
   const preloadPath = resolvePreloadPath()
+  const usesDesktopTitleBar = process.platform === 'win32' || process.platform === 'linux'
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 840,
     minWidth: 960,
     minHeight: 640,
     icon: appIcon.isEmpty() ? undefined : appIcon,
-    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : usesDesktopTitleBar ? 'hidden' : 'default',
+    titleBarOverlay: usesDesktopTitleBar ? desktopTitleBarOverlayOptions() : undefined,
     trafficLightPosition: process.platform === 'darwin' ? { x: 31, y: 22 } : undefined,
+    autoHideMenuBar: usesDesktopTitleBar,
     show: false,
     webPreferences: {
       preload: preloadPath,
@@ -547,6 +559,10 @@ function createWindow(): void {
       webviewTag: true
     }
   })
+  if (usesDesktopTitleBar) {
+    mainWindow.setMenu(null)
+    mainWindow.setMenuBarVisibility(false)
+  }
   mainWindow.webContents.on('preload-error', (_event, preloadPath, error) => {
     const message = error instanceof Error ? error.message : String(error)
     console.error(`[deepseek-gui] failed to load preload ${preloadPath}:`, error)

@@ -13,6 +13,9 @@ import {
 const handlers = new Map<string, (event: unknown, payload?: unknown) => Promise<unknown>>()
 
 vi.mock('electron', () => ({
+  app: {
+    quit: vi.fn()
+  },
   dialog: {},
   shell: {},
   ipcMain: {
@@ -227,5 +230,45 @@ describe('registerAppIpcHandlers', () => {
       modelHint: 'deepseek-v4-flash',
       mode: 'plan'
     })
+  })
+
+  it('routes desktop command IPC calls to the focused window and web contents', async () => {
+    const { registerAppIpcHandlers } = await import('./register-app-ipc-handlers')
+    const webContents = {
+      undo: vi.fn(),
+      redo: vi.fn(),
+      cut: vi.fn(),
+      copy: vi.fn(),
+      paste: vi.fn(),
+      selectAll: vi.fn(),
+      reload: vi.fn(),
+      getZoomLevel: vi.fn(() => 0),
+      setZoomLevel: vi.fn(),
+      toggleDevTools: vi.fn()
+    }
+    const mainWindow = {
+      isDestroyed: vi.fn(() => false),
+      webContents,
+      minimize: vi.fn(),
+      isMaximized: vi.fn(() => false),
+      maximize: vi.fn(),
+      unmaximize: vi.fn(),
+      close: vi.fn()
+    }
+
+    registerAppIpcHandlers(registerOptions({
+      getMainWindow: () => mainWindow as never
+    }))
+
+    const handler = handlers.get('desktop:command')
+    await handler?.({ sender: webContents }, 'copy')
+    await handler?.({ sender: webContents }, 'zoomIn')
+    await handler?.({ sender: webContents }, 'toggleMaximize')
+    await handler?.({ sender: webContents }, 'close')
+
+    expect(webContents.copy).toHaveBeenCalledTimes(1)
+    expect(webContents.setZoomLevel).toHaveBeenCalledWith(1)
+    expect(mainWindow.maximize).toHaveBeenCalledTimes(1)
+    expect(mainWindow.close).toHaveBeenCalledTimes(1)
   })
 })

@@ -32,6 +32,7 @@ import {
   SCHEDULE_REASONING_EFFORT_IDS,
   WRITE_INLINE_COMPLETION_MODEL_IDS
 } from '../../shared/app-settings'
+import { DESKTOP_COMMANDS } from '../../shared/ds-gui-api'
 import { GUI_UPDATE_CHANNELS } from '../../shared/gui-update'
 import { WRITE_EXPORT_FORMATS } from '../../shared/write-export'
 
@@ -708,6 +709,10 @@ export const notificationPayloadSchema = z
   .strict()
 
 export const guiUpdateChannelSchema = z.enum(GUI_UPDATE_CHANNELS).optional()
+
+export const desktopCommandSchema = z.enum(DESKTOP_COMMANDS)
+
+export const windowsTitleBarThemeSchema = z.enum(['light', 'dark'])
 
 export const logErrorPayloadSchema = z
   .object({

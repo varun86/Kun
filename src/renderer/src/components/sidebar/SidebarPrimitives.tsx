@@ -55,15 +55,15 @@ export function SidebarFrame({
         className
       )}
     >
-      <div className="shrink-0 pb-5 pt-3">
-        <div className="flex min-h-[34px] items-start justify-between">
+      <div className="ds-sidebar-titlebar-spacer shrink-0 pb-5 pt-3">
+        <div className="ds-sidebar-titlebar-row flex min-h-[34px] items-start justify-between">
           <div aria-hidden className="ds-titlebar-safe-block min-w-[86px]" />
           {onCollapse ? (
             <SidebarTitlebarToggleButton
               onClick={onCollapse}
               title={title}
               ariaLabel={title}
-              className="mt-[5px]"
+              className="ds-sidebar-titlebar-toggle mt-[5px]"
             />
           ) : null}
         </div>

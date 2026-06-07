@@ -1550,6 +1550,7 @@ export function Workbench(): ReactElement {
                 showDevPreviewCard ? (
                   <DevPreviewLaunchCard
                     url={latestDevPreviewUrl}
+                    opened={rightPanelMode === 'browser'}
                     onOpen={openDevPreview}
                   />
                 ) : null

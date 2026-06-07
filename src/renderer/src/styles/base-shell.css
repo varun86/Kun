@@ -97,6 +97,12 @@
   --ds-write-titlebar-extra-inset: 20px;
 }
 
+:root[data-platform='win32'],
+:root[data-platform='linux'] {
+  --ds-windows-titlebar-height: 40px;
+  --ds-windows-caption-controls-width: 138px;
+}
+
 [data-theme='dark'] {
   --bg-app: #101010;
   --bg-sidebar: #141414;
@@ -226,6 +232,142 @@ html {
 
 [data-theme='dark'] {
   color-scheme: dark;
+}
+
+.ds-windows-app-frame {
+  background: var(--ds-bg-main);
+}
+
+.ds-windows-titlebar {
+  position: relative;
+  z-index: 80;
+  display: flex;
+  height: var(--ds-windows-titlebar-height, 40px);
+  min-height: var(--ds-windows-titlebar-height, 40px);
+  flex: 0 0 var(--ds-windows-titlebar-height, 40px);
+  align-items: center;
+  justify-content: flex-start;
+  border-bottom: 1px solid var(--ds-border-muted);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.8), rgba(246, 248, 251, 0.72)),
+    var(--ds-bg-main);
+  color: var(--ds-text);
+  user-select: none;
+}
+
+.ds-windows-titlebar-content {
+  display: flex;
+  min-width: 0;
+  max-width: calc(100% - var(--ds-windows-caption-controls-width, 138px));
+  align-items: center;
+  gap: 8px;
+  padding-left: 12px;
+  padding-right: 12px;
+}
+
+.ds-windows-titlebar-icon {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  border-radius: 4px;
+  object-fit: contain;
+}
+
+.ds-windows-menu {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 1px;
+}
+
+.ds-windows-menu-slot {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.ds-windows-menu-button {
+  display: inline-flex;
+  height: 28px;
+  align-items: center;
+  border-radius: 6px;
+  padding: 0 9px;
+  color: var(--ds-text-muted);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.ds-windows-menu-button:hover,
+.ds-windows-menu-button.is-open {
+  background: var(--ds-surface-hover);
+  color: var(--ds-text);
+}
+
+.ds-windows-menu-popover {
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 0;
+  z-index: 90;
+  min-width: 218px;
+  overflow: hidden;
+  border: 1px solid var(--ds-border);
+  border-radius: 8px;
+  background: var(--ds-card-strong);
+  padding: 5px;
+  box-shadow:
+    0 18px 48px rgba(15, 23, 42, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(18px);
+}
+
+.ds-windows-menu-item {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  border-radius: 6px;
+  padding: 7px 9px;
+  color: var(--ds-text);
+  font-size: 13px;
+  line-height: 1.25;
+  text-align: left;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.ds-windows-menu-item:hover {
+  background: var(--ds-surface-hover);
+}
+
+.ds-windows-menu-shortcut {
+  flex: 0 0 auto;
+  color: var(--ds-text-faint);
+  font-size: 12px;
+}
+
+.ds-windows-menu-separator {
+  height: 1px;
+  margin: 5px 4px;
+  background: var(--ds-border-muted);
+}
+
+[data-theme='dark'] .ds-windows-titlebar {
+  background:
+    linear-gradient(180deg, rgba(24, 24, 24, 0.92), rgba(16, 16, 16, 0.82)),
+    var(--ds-bg-main);
+}
+
+[data-theme='dark'] .ds-windows-menu-popover {
+  box-shadow:
+    0 22px 56px rgba(0, 0, 0, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
 /* Workbench-specific dark tuning: keep layered grays aligned with the Codex-style dark palette. */

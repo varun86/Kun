@@ -139,6 +139,10 @@ const api = {
       modelHint: options?.modelHint,
       mode: options?.mode
     }),
+  runDesktopCommand: (command) =>
+    ipcRenderer.invoke('desktop:command', command),
+  setWindowsTitleBarTheme: (theme) =>
+    ipcRenderer.invoke('windows:titlebar-theme', theme),
   openExternal: (url) => ipcRenderer.invoke('shell:open-external', url),
   showTurnCompleteNotification: (payload) => ipcRenderer.invoke('notification:turn-complete', payload),
   getAppVersion: () => ipcRenderer.invoke('app:version'),
