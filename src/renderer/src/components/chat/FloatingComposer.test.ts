@@ -726,4 +726,87 @@ describe('FloatingComposer capability controls', () => {
     expect(html).toContain('aria-label="Send"')
     expect(html).not.toContain('aria-label="Send" disabled=""')
   })
+
+  it('renders execution access controls in the composer footer', () => {
+    useChatStore.setState({
+      activeThreadId: 'thr_1',
+      activeThreadGoal: null,
+      route: 'chat',
+      workspaceRoot: '/workspace/deepseek-gui'
+    })
+
+    const html = renderToStaticMarkup(
+      createElement(FloatingComposer, {
+        input: 'hello',
+        setInput: () => undefined,
+        mode: 'agent',
+        setMode: () => undefined,
+        busy: false,
+        runtimeReady: true,
+        hasActiveThread: true,
+        composerModel: '',
+        composerPickList: [],
+        onComposerModelChange: () => undefined,
+        queuedMessages: [],
+        onRemoveQueuedMessage: () => undefined,
+        onSend: () => undefined,
+        onInterrupt: () => undefined,
+        attachmentUploadEnabled: false,
+        webAccessAvailable: false,
+        executionSettings: {
+          approvalPolicy: 'auto',
+          sandboxMode: 'danger-full-access'
+        },
+        onExecutionSettingsChange: () => undefined
+      })
+    )
+
+    expect(html).toContain('Full access')
+    expect(html).toContain('aria-haspopup="menu"')
+    expect(html).toContain('aria-label="Execution"')
+  })
+
+  it('renders a changed-file review card above the input', () => {
+    useChatStore.setState({
+      activeThreadId: 'thr_1',
+      activeThreadGoal: null,
+      route: 'chat',
+      workspaceRoot: '/workspace/deepseek-gui'
+    })
+
+    const html = renderToStaticMarkup(
+      createElement(FloatingComposer, {
+        input: 'review this',
+        setInput: () => undefined,
+        mode: 'agent',
+        setMode: () => undefined,
+        busy: false,
+        runtimeReady: true,
+        hasActiveThread: true,
+        composerModel: '',
+        composerPickList: [],
+        onComposerModelChange: () => undefined,
+        queuedMessages: [],
+        onRemoveQueuedMessage: () => undefined,
+        onSend: () => undefined,
+        onInterrupt: () => undefined,
+        attachmentUploadEnabled: false,
+        webAccessAvailable: false,
+        changedFiles: [
+          { path: 'src/a.ts', added: 3, removed: 1 },
+          { path: 'src/b.ts', added: 2, removed: 4 }
+        ],
+        changedFileStats: { added: 5, removed: 5 },
+        onOpenChanges: () => undefined,
+        onReviewChanges: () => undefined
+      })
+    )
+
+    expect(html).toContain('2 files changed')
+    expect(html).toContain('src/a.ts')
+    expect(html).toContain('+5')
+    expect(html).toContain('-5')
+    expect(html).toContain('Preview')
+    expect(html).toContain('Review')
+  })
 })

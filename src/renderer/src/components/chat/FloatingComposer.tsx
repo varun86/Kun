@@ -12,6 +12,7 @@ import {
 import {
   Archive,
   BarChart3,
+  FileEdit,
   FileText,
   GitFork,
   ImagePlus,
@@ -76,9 +77,15 @@ import {
   FloatingComposerQueuedMessages,
   type QueuedComposerMessage
 } from './FloatingComposerQueuedMessages'
+import {
+  FloatingComposerExecutionPicker,
+  type ComposerExecutionSettings
+} from './FloatingComposerExecutionPicker'
 import { useComposerDraft } from './use-composer-draft'
+import type { ComposerChangedFile } from '../../lib/composer-change-summary'
 
 export type { ComposerFileReference } from '../../lib/composer-file-references'
+export type { ComposerExecutionSettings } from './FloatingComposerExecutionPicker'
 
 type Props = {
   variant?: 'default' | 'compact'
@@ -107,6 +114,10 @@ type Props = {
   fileReferenceEnabled?: boolean
   fileReferences?: ComposerFileReference[]
   webAccessAvailable?: boolean
+  executionSettings?: ComposerExecutionSettings | null
+  executionSettingsApplying?: boolean
+  changedFiles?: ComposerChangedFile[]
+  changedFileStats?: { added: number; removed: number } | null
   skillCommands?: Array<{
     id: string
     name: string
@@ -129,6 +140,10 @@ type Props = {
   onInterrupt: (options?: { discard?: boolean }) => void
   onPlanCommand?: () => void
   onReviewCommand?: (target: ReviewTarget) => void
+  onExecutionSettingsChange?: (patch: Partial<ComposerExecutionSettings>) => void
+  onOpenChanges?: () => void
+  onReviewChanges?: () => void
+  reviewChangesDisabled?: boolean
   /**
    * When set, the `/btw` slash command is offered. It is omitted from
    * side-conversation composers (non-goal: no nested `/btw`).
@@ -145,6 +160,7 @@ type SkillCommand = NonNullable<Props['skillCommands']>[number]
 const EMPTY_MODEL_GROUPS: ModelProviderModelGroup[] = []
 const EMPTY_ATTACHMENTS: AttachmentReference[] = []
 const EMPTY_FILE_REFERENCES: ComposerFileReference[] = []
+const EMPTY_CHANGED_FILES: ComposerChangedFile[] = []
 const EMPTY_SKILL_COMMANDS: SkillCommand[] = []
 
 type ComposerTransferItem = {
@@ -477,6 +493,10 @@ export function FloatingComposer({
   attachmentUploadError = null,
   fileReferenceEnabled = false,
   fileReferences = EMPTY_FILE_REFERENCES,
+  executionSettings = null,
+  executionSettingsApplying = false,
+  changedFiles = EMPTY_CHANGED_FILES,
+  changedFileStats = null,
   skillCommands = EMPTY_SKILL_COMMANDS,
   onPickAttachments,
   onPasteClipboardImage,
@@ -487,6 +507,10 @@ export function FloatingComposer({
   onInterrupt,
   onPlanCommand,
   onReviewCommand,
+  onExecutionSettingsChange,
+  onOpenChanges,
+  onReviewChanges,
+  reviewChangesDisabled = false,
   onBtwCommand,
   hideBtwCommand = false
 }: Props): ReactElement {
@@ -557,6 +581,18 @@ export function FloatingComposer({
   const canRunReview = canCompose && route !== 'claw' && Boolean(onReviewCommand)
   const canOpenComposerMenu = showComposerMenuButton && (canTogglePlanMode || canOpenGoalPanel || canRunReview)
   const showToolbarStartControls = showComposerMenuButton
+  const showExecutionPicker =
+    !compact && route === 'chat' && Boolean(executionSettings && onExecutionSettingsChange)
+  const showChangeSummary = !compact && route === 'chat' && changedFiles.length > 0
+  const effectiveChangedFileStats = changedFileStats ?? changedFiles.reduce(
+    (stats, file) => ({
+      added: stats.added + file.added,
+      removed: stats.removed + file.removed
+    }),
+    { added: 0, removed: 0 }
+  )
+  const visibleChangedFiles = changedFiles.slice(0, 3)
+  const hiddenChangedFileCount = Math.max(0, changedFiles.length - visibleChangedFiles.length)
   const stretchModelPicker =
     compact && modelPickerMode === 'combobox' && !showToolbarStartControls && !hideModelPicker
   const draft = useComposerDraft({ input, canCompose })
@@ -1589,6 +1625,60 @@ export function FloatingComposer({
           onDragOver={handleComposerDragOver}
           onDrop={handleComposerDrop}
         >
+          {showChangeSummary ? (
+            <div className="ds-no-drag mb-1 rounded-2xl border border-ds-border-muted bg-ds-card/78 px-3 py-2 shadow-sm">
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-ds-hover text-ds-muted">
+                  <FileEdit className="h-4 w-4" strokeWidth={1.8} />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[13px] font-semibold text-ds-ink">
+                    <span className="truncate">{t('composerChangedFilesTitle', { count: changedFiles.length })}</span>
+                    <span className="font-mono text-[12px] text-ds-diff-added">
+                      +{effectiveChangedFileStats.added}
+                    </span>
+                    <span className="font-mono text-[12px] text-ds-diff-removed">
+                      -{effectiveChangedFileStats.removed}
+                    </span>
+                  </div>
+                  <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-ds-muted">
+                    {visibleChangedFiles.map((file) => (
+                      <span key={file.path} className="max-w-[220px] truncate" title={file.path}>
+                        {file.path}
+                      </span>
+                    ))}
+                    {hiddenChangedFileCount > 0 ? (
+                      <span className="text-ds-faint">
+                        {t('composerChangedFilesMore', { count: hiddenChangedFileCount })}
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  {onOpenChanges ? (
+                    <button
+                      type="button"
+                      onClick={onOpenChanges}
+                      className="rounded-full border border-ds-border bg-ds-card px-3 py-1.5 text-[12px] font-semibold text-ds-ink transition hover:bg-ds-hover"
+                    >
+                      {t('composerOpenChanges')}
+                    </button>
+                  ) : null}
+                  {onReviewChanges ? (
+                    <button
+                      type="button"
+                      disabled={reviewChangesDisabled}
+                      onClick={onReviewChanges}
+                      className="inline-flex items-center gap-1.5 rounded-full border border-ds-border bg-ds-card px-3 py-1.5 text-[12px] font-semibold text-ds-ink transition hover:bg-ds-hover disabled:cursor-not-allowed disabled:opacity-55"
+                    >
+                      <SearchCode className="h-3.5 w-3.5" strokeWidth={1.8} />
+                      {t('composerReviewChanges')}
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          ) : null}
           <textarea
             ref={draft.textareaRef}
             rows={1}
@@ -1792,6 +1882,14 @@ export function FloatingComposer({
         <div className="ds-composer-footer mt-1 flex min-h-7 flex-wrap items-center justify-between gap-x-2.5 gap-y-1.5 px-3">
           <div className="ds-composer-footer-left flex min-w-0 flex-1 flex-wrap items-center gap-2">
             <GitBranchPicker workspaceRoot={effectiveWorkspaceRoot} />
+            {showExecutionPicker && executionSettings && onExecutionSettingsChange ? (
+              <FloatingComposerExecutionPicker
+                value={executionSettings}
+                applying={executionSettingsApplying}
+                disabled={!runtimeReady || busy}
+                onChange={onExecutionSettingsChange}
+              />
+            ) : null}
             {showThreadUsageFooter ? (
               <div
                 className="ds-composer-usage ds-no-drag inline-flex min-h-7 max-w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 overflow-visible rounded-lg border border-ds-border-muted bg-ds-card/72 px-2.5 py-0.5 text-[12.5px] font-medium leading-5 text-ds-muted shadow-sm"

@@ -2,6 +2,7 @@ import type { ReactElement } from 'react'
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useShallow } from 'zustand/react/shallow'
+import type { ApprovalPolicy, SandboxMode } from '@shared/app-settings'
 import { parseClawCommand } from '@shared/claw-commands'
 import { DEFAULT_COMPOSER_MODEL_IDS } from '@shared/default-composer-models'
 import { buildGuiPlanId, buildPlanRelativePath } from '@shared/gui-plan'
@@ -16,6 +17,7 @@ import type { ClipboardImageReadResult } from '@shared/workspace-file'
 import type { AttachmentReference, ChatBlock } from '../agent/types'
 import type { CoreRuntimeInfoJson, CoreRuntimeSkillJson } from '../agent/kun-contract'
 import { getProvider } from '../agent/registry'
+import { rendererRuntimeClient } from '../agent/runtime-client'
 import { useChatStore } from '../store/chat-store'
 import { isClawThread } from '../store/chat-store-helpers'
 import { hasPendingRuntimeWork } from '../store/chat-store-runtime-helpers'
@@ -26,7 +28,11 @@ import {
 import { Sidebar } from './chat/Sidebar'
 import { WorkbenchTopBar, type RightPanelMode } from './chat/WorkbenchTopBar'
 import { MessageTimeline } from './chat/MessageTimeline'
-import { FloatingComposer, type ComposerFileReference } from './chat/FloatingComposer'
+import {
+  FloatingComposer,
+  type ComposerExecutionSettings,
+  type ComposerFileReference
+} from './chat/FloatingComposer'
 import {
   composerReasoningEffortRequestValue,
   type ComposerReasoningEffort
@@ -64,6 +70,7 @@ import { prepareImageAttachmentUpload } from '../lib/image-attachment-upload'
 import { isChatAttachmentUploadEnabled } from '../lib/attachment-upload-availability'
 import { normalizeWorkspaceRoot } from '../lib/workspace-path'
 import { useKeyboardShortcutSettings } from '../lib/keyboard-shortcut-settings'
+import { collectComposerChangeSummary } from '../lib/composer-change-summary'
 import {
   buildComposerFileContextPrompt,
   mergeComposerFileReferences,
@@ -340,6 +347,9 @@ export function Workbench(): ReactElement {
   const [runtimeSkills, setRuntimeSkills] = useState<CoreRuntimeSkillJson[]>([])
   const [composerAttachments, setComposerAttachments] = useState<AttachmentReference[]>([])
   const [composerFileReferences, setComposerFileReferences] = useState<ComposerFileReference[]>([])
+  const [composerExecutionSettings, setComposerExecutionSettings] =
+    useState<ComposerExecutionSettings | null>(null)
+  const [composerExecutionApplying, setComposerExecutionApplying] = useState(false)
   const [attachmentUploadBusy, setAttachmentUploadBusy] = useState(false)
   const [attachmentUploadError, setAttachmentUploadError] = useState<string | null>(null)
   const [connectPhoneSidebarOpen, setConnectPhoneSidebarOpen] = useState(false)
@@ -406,6 +416,10 @@ export function Workbench(): ReactElement {
   const activeSkillWorkspace = useMemo(
     () => threads.find((thread) => thread.id === activeThreadId)?.workspace || workspaceRoot || '',
     [activeThreadId, threads, workspaceRoot]
+  )
+  const composerChangeSummary = useMemo(
+    () => collectComposerChangeSummary(timelineBlocks, activeSkillWorkspace),
+    [activeSkillWorkspace, timelineBlocks]
   )
   const latestDevPreviewUrl = detectedDevPreviewUrls[0] ?? null
   const latestAutoOpenDevPreviewUrl = autoOpenDevPreviewUrls[0] ?? null
@@ -554,6 +568,47 @@ export function Workbench(): ReactElement {
       return
     }
     openSideConversationDraft()
+  }
+
+  useEffect(() => {
+    let cancelled = false
+    void rendererRuntimeClient.getSettings()
+      .then((settings) => {
+        if (cancelled) return
+        setComposerExecutionSettings({
+          approvalPolicy: settings.agents.kun.approvalPolicy,
+          sandboxMode: settings.agents.kun.sandboxMode
+        })
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const updateComposerExecutionSettings = (patch: Partial<ComposerExecutionSettings>): void => {
+    if (!composerExecutionSettings || composerExecutionApplying) return
+    const previous = composerExecutionSettings
+    const next = { ...previous, ...patch }
+    setComposerExecutionSettings(next)
+    setComposerExecutionApplying(true)
+    void rendererRuntimeClient.setSettings({
+      agents: {
+        kun: {
+          ...(patch.approvalPolicy ? { approvalPolicy: patch.approvalPolicy as ApprovalPolicy } : {}),
+          ...(patch.sandboxMode ? { sandboxMode: patch.sandboxMode as SandboxMode } : {})
+        }
+      }
+    }).then((settings) => {
+      setComposerExecutionSettings({
+        approvalPolicy: settings.agents.kun.approvalPolicy,
+        sandboxMode: settings.agents.kun.sandboxMode
+      })
+      void probeRuntime('background')
+    }).catch((error: unknown) => {
+      setComposerExecutionSettings(previous)
+      setError(error instanceof Error ? error.message : String(error))
+    }).finally(() => setComposerExecutionApplying(false))
   }
 
   const codeThreads = useMemo(
@@ -1726,6 +1781,10 @@ export function Workbench(): ReactElement {
                 fileReferenceEnabled={route === 'chat' && !activeSddDraft}
                 fileReferences={composerFileReferences}
                 webAccessAvailable={webAccessAvailable}
+                executionSettings={composerExecutionSettings}
+                executionSettingsApplying={composerExecutionApplying}
+                changedFiles={composerChangeSummary?.files}
+                changedFileStats={composerChangeSummary}
                 skillCommands={runtimeSkills}
                 onPickAttachments={(files) => void handlePickAttachments(files)}
                 onPasteClipboardImage={(options) => void handlePasteClipboardImage(options)}
@@ -1737,6 +1796,10 @@ export function Workbench(): ReactElement {
                 onInterrupt={(options) => void interrupt(options)}
                 onPlanCommand={() => void handleGuiPlanCommand()}
                 onReviewCommand={(target) => void reviewActiveThread(target)}
+                onExecutionSettingsChange={updateComposerExecutionSettings}
+                onOpenChanges={() => setRightPanelMode('changes')}
+                onReviewChanges={() => void reviewActiveThread({ kind: 'uncommittedChanges' })}
+                reviewChangesDisabled={busy || runtimeConnection !== 'ready'}
                 onBtwCommand={(seedText) => {
                   if (seedText?.trim()) {
                     void spawnSideConversation(seedText)
