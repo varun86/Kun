@@ -124,6 +124,47 @@ export const PLAN_MODE_INSTRUCTION = [
   'After saving, give the user a short summary of the plan and what to review.'
 ].join('\n')
 
+/** Read-only tools allowed during the investigation phase of a Plan-mode
+ * turn (step 0, before `create_plan` has been called). Matches the
+ * PLAN_MODE_INSTRUCTION guidance. `bash` is intentionally excluded —
+ * it can execute arbitrary commands and its policy is `on-request` which
+ * auto-approves under `approvalPolicy: auto`. */
+const PLAN_READ_ONLY_TOOL_NAMES = new Set([
+  'read',
+  'ls',
+  'find',
+  'grep',
+  'web_search',
+  'web_fetch'
+])
+
+/**
+ * Resolve the tool list for a Plan-mode turn step. Extracted as a pure
+ * function so the behaviour can be unit-tested without spinning up the
+ * full agent loop.
+ *
+ * - Not plan-active or plan already satisfied → pass through unchanged.
+ * - Step 0 (investigation): read-only tools + create_plan.
+ * - Step > 0 (must produce plan): only create_plan.
+ */
+export function resolvePlanModeToolSpecs(
+  toolSpecs: ModelToolSpec[],
+  options: {
+    planTurnActive: boolean
+    createPlanSatisfied: boolean
+    stepIndex: number
+    readOnlyToolNames?: ReadonlySet<string>
+    planToolName?: string
+  }
+): ModelToolSpec[] {
+  if (!options.planTurnActive || options.createPlanSatisfied) return toolSpecs
+  const readOnly = options.readOnlyToolNames ?? PLAN_READ_ONLY_TOOL_NAMES
+  const planTool = options.planToolName ?? CREATE_PLAN_TOOL_NAME
+  return options.stepIndex === 0
+    ? toolSpecs.filter((tool) => tool.name === planTool || readOnly.has(tool.name))
+    : toolSpecs.filter((tool) => tool.name === planTool)
+}
+
 function goalContinuationInstruction(goal: ThreadGoal | undefined): string | null {
   if (!goal || goal.status !== 'active') return null
   const tokenBudget = goal.tokenBudget == null ? 'none' : String(goal.tokenBudget)
@@ -599,10 +640,11 @@ export class AgentLoop {
       toolSpecs.some((tool) => tool.name === CREATE_PLAN_TOOL_NAME)
         ? CREATE_PLAN_TOOL_NAME
         : undefined
-    // Final step of a plan turn that still owes a plan. Offer ONLY create_plan
-    // (this DeepSeek-compatible provider ignores a forced tool_choice, so we
-    // remove the investigation tools instead) so the model can only save the
-    // plan or answer with plan text that the create_plan fallback materializes.
+    const effectiveToolSpecs = resolvePlanModeToolSpecs(toolSpecs, {
+      planTurnActive,
+      createPlanSatisfied,
+      stepIndex
+    })
     const history = await this.compactIfNeeded(items, model, signal, { threadId, turnId })
     if (signal.aborted) return 'aborted'
     await this.recordPipelineStage(threadId, turnId, 'input_compressed', {
@@ -613,7 +655,7 @@ export class AgentLoop {
       ...(activeTodoInstruction ? [activeTodoInstruction] : []),
       ...memoryInstructions(memories),
       ...skillResolution.instructions,
-      ...(toolSpecs.some((tool) => tool.name === 'bash') ? [shellRuntimeInstruction()] : []),
+      ...(effectiveToolSpecs.some((tool) => tool.name === 'bash') ? [shellRuntimeInstruction()] : []),
       ...(toolCatalogDriftMessage ? [toolCatalogDriftMessage] : [])
     ]
     await this.recordPipelineStage(threadId, turnId, 'input_remembered', {
@@ -632,7 +674,7 @@ export class AgentLoop {
       history,
       ...(attachments.imageAttachments.length ? { attachments: attachments.imageAttachments } : {}),
       ...(attachments.textFallbacks.length ? { attachmentTextFallbacks: attachments.textFallbacks } : {}),
-      tools: toolSpecs,
+      tools: effectiveToolSpecs,
       ...(requiredToolName ? { requiredToolName } : {}),
       ...(modelRoute.reasoningEffort ? { reasoningEffort: modelRoute.reasoningEffort } : {}),
       abortSignal: signal

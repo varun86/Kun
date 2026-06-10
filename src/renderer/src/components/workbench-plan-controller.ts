@@ -218,9 +218,12 @@ export function useWorkbenchPlanController({
       return false
     }
     planTurnInFlightRef.current = true
-    const planOverrides = planTurnOverrides(targetWorkspaceRoot, currentChatState.activeThreadId)
     const { workspaceRoot: _workspaceRoot, ...messageOverrides } = overrides ?? {}
-    const guiPlan = messageOverrides.guiPlan ?? planOverrides?.guiPlan ?? buildDraftGuiPlanTurnOverrides({
+    // Default to draft: an explicit guiPlan override (e.g. from SDD upgrade)
+    // takes priority; otherwise we always start a fresh plan. Previously the
+    // active plan was auto-detected as operation: 'refine', which caused new
+    // composer requests to be treated as refinements of an old plan.
+    const guiPlan = messageOverrides.guiPlan ?? buildDraftGuiPlanTurnOverrides({
       request: text,
       workspaceRoot: targetWorkspaceRoot,
       activeThreadId: currentChatState.activeThreadId,
