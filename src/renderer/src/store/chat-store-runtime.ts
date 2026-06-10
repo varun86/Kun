@@ -467,7 +467,16 @@ export function armBusyWatchdog(
     timeoutMs: BUSY_WATCHDOG_MS,
     maxAttempts: MAX_BUSY_RECOVERY_ATTEMPTS,
     finalizeBusyState: finalizeTurnTiming,
-    flushLiveBlocks,
+    // Settle stuck running/pending blocks alongside the live flush: a
+    // timed-out turn that leaves a tool block "running" keeps
+    // hasPendingRuntimeWork true, which queues every later message
+    // forever ("queued, sends after current reply") with nothing to
+    // drain it.
+    flushLiveBlocks: (state, base) => {
+      const flushed = flushLiveBlocks(state, base)
+      const blocks = settlePendingRuntimeWorkAfterInterrupt(flushed.blocks ?? state.blocks)
+      return { ...flushed, blocks }
+    },
     busyTimeoutMessage: () => i18n.t('common:busyTimeout', { minutes: Math.round((BUSY_WATCHDOG_MS * MAX_BUSY_RECOVERY_ATTEMPTS) / 60_000) })
   })
 }
