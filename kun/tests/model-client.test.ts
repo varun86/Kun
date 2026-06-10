@@ -1370,6 +1370,53 @@ describe('DeepseekCompatModelClient', () => {
     expect(messages[2]).toMatchObject({ role: 'user', content: 'continue' })
   })
 
+  it('sends volatile context instructions after the history for cache prefix stability', async () => {
+    const sentBodies: Array<{ messages?: Array<Record<string, unknown>> }> = []
+    const response = {
+      id: 'r1',
+      model: 'deepseek-chat',
+      choices: [
+        {
+          index: 0,
+          finish_reason: 'stop',
+          message: { role: 'assistant', content: 'done' }
+        }
+      ],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
+    }
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      sentBodies.push(JSON.parse(String(init?.body ?? '{}')))
+      return new Response(JSON.stringify(response), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    }
+    const client = new DeepseekCompatModelClient({
+      baseUrl: 'https://example.com/beta',
+      apiKey: 'k',
+      model: 'deepseek-chat',
+      fetchImpl,
+      nonStreaming: true
+    })
+    const request = buildRequest(new AbortController().signal)
+    request.contextInstructions = ['Tokens used: 4321 — continue the goal.']
+    request.history = [
+      makeUserItem({ id: 'user_1', turnId: 'turn_1', threadId: 'thr_1', text: 'hello' })
+    ]
+
+    for await (const _chunk of client.stream(request)) {
+      // drain
+    }
+
+    const messages = sentBodies[0]?.messages ?? []
+    const instructionIndex = messages.findIndex(
+      (message) => typeof message.content === 'string' && message.content.includes('Tokens used: 4321')
+    )
+    const userIndex = messages.findIndex((message) => message.role === 'user')
+    expect(instructionIndex).toBeGreaterThan(userIndex)
+    expect(messages[instructionIndex]).toMatchObject({ role: 'system' })
+  })
+
   it('preserves the latest compaction summary when applying history limits', async () => {
     const sentBodies: Array<{ messages?: Array<Record<string, unknown>> }> = []
     const response = {

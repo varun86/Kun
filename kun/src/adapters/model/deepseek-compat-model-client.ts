@@ -427,9 +427,6 @@ export class DeepseekCompatModelClient implements ModelClient {
     if (request.modeInstruction) {
       out.push({ role: 'system', content: request.modeInstruction })
     }
-    for (const instruction of request.contextInstructions ?? []) {
-      if (instruction.trim()) out.push({ role: 'system', content: instruction })
-    }
     const windowSize = this.config.historyLimit
     const history = windowSize
       ? limitHistoryPreservingCompaction(request.history, windowSize)
@@ -439,6 +436,14 @@ export class DeepseekCompatModelClient implements ModelClient {
       repairModelHistoryItems([...request.prefix, ...history]),
       thinkingMode
     ))
+    // Per-turn context (goal budgets, todo state, memories, skill notes,
+    // drift warnings) is volatile — the goal instruction alone embeds a
+    // tokens-used counter that changes every step. It must trail the
+    // stable history: placed before it, every counter tick invalidated
+    // the provider prompt cache for the entire conversation.
+    for (const instruction of request.contextInstructions ?? []) {
+      if (instruction.trim()) out.push({ role: 'system', content: instruction })
+    }
     if (request.attachments?.length) {
       attachImagesToLatestUserMessage(out, request.attachments)
     }
