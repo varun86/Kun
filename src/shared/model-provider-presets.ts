@@ -134,6 +134,12 @@ const MINIMAX_BUILT_IN_REASONING: ModelProviderReasoningCapabilityV1 = {
   requestProtocol: 'none'
 }
 
+const GLM_REASONING: ModelProviderReasoningCapabilityV1 = {
+  supportedEfforts: ['off', 'high', 'max'],
+  defaultEffort: 'max',
+  requestProtocol: 'glm-chat-completions'
+}
+
 const ZHIPU_CODING_PLAN_MODELS = [
   'glm-5.2',
   'glm-5.1',
@@ -176,11 +182,11 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     endpointFormat: 'chat_completions',
     models: [...ZHIPU_CODING_PLAN_MODELS],
     modelProfiles: {
-      'glm-5.2': textChatProfile(1_000_000),
-      'glm-5.1': textChatProfile(200_000),
-      'glm-5-turbo': textChatProfile(200_000),
-      'glm-4.7': textChatProfile(200_000),
-      'glm-4.5-air': textChatProfile(200_000)
+      'glm-5.2': textChatProfile(1_000_000, GLM_REASONING),
+      'glm-5.1': textChatProfile(200_000, GLM_REASONING),
+      'glm-5-turbo': textChatProfile(200_000, GLM_REASONING),
+      'glm-4.7': textChatProfile(200_000, GLM_REASONING),
+      'glm-4.5-air': textChatProfile(200_000, GLM_REASONING)
     },
     docsUrl: 'https://docs.bigmodel.cn/cn/coding-plan/overview',
     apiKeyUrl: 'https://bigmodel.cn/usercenter/proj-mgmt/apikeys'
@@ -192,11 +198,11 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     endpointFormat: 'chat_completions',
     models: [...ZAI_CODING_PLAN_MODELS],
     modelProfiles: {
-      'glm-5.1': textChatProfile(200_000),
-      'glm-5': textChatProfile(200_000),
-      'glm-5-turbo': textChatProfile(200_000),
-      'glm-4.7': textChatProfile(200_000),
-      'glm-4.5-air': textChatProfile(200_000)
+      'glm-5.1': textChatProfile(200_000, GLM_REASONING),
+      'glm-5': textChatProfile(200_000, GLM_REASONING),
+      'glm-5-turbo': textChatProfile(200_000, GLM_REASONING),
+      'glm-4.7': textChatProfile(200_000, GLM_REASONING),
+      'glm-4.5-air': textChatProfile(200_000, GLM_REASONING)
     },
     docsUrl: 'https://docs.z.ai/devpack/tool/others',
     apiKeyUrl: 'https://z.ai/subscribe'

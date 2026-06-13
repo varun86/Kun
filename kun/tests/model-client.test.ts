@@ -396,6 +396,50 @@ describe('DeepseekCompatModelClient', () => {
     expect(sentBodies[0]).not.toHaveProperty('thinking')
   })
 
+  it('maps GLM reasoning profiles to GLM thinking request controls', async () => {
+    const sentBodies: Array<Record<string, unknown>> = []
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      sentBodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>)
+      return new Response(JSON.stringify({
+        id: 'glm_1',
+        model: 'glm-5.2',
+        choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: 'ok' } }]
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    }
+    const client = new DeepseekCompatModelClient({
+      baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
+      apiKey: 'k',
+      model: 'glm-5.2',
+      fetchImpl,
+      nonStreaming: true,
+      modelCapabilities: (model) => ({
+        id: model,
+        inputModalities: ['text'],
+        outputModalities: ['text'],
+        supportsToolCalling: true,
+        contextWindowTokens: 1_000_000,
+        messageParts: ['text'],
+        reasoning: {
+          supportedEfforts: ['off', 'high', 'max'],
+          defaultEffort: 'max',
+          requestProtocol: 'glm-chat-completions'
+        }
+      })
+    })
+    const request = buildRequest(new AbortController().signal)
+    request.model = 'glm-5.2'
+    request.reasoningEffort = 'max'
+    for await (const _chunk of client.stream(request)) {
+      // drain
+    }
+
+    expect(sentBodies[0]?.thinking).toEqual({ type: 'enabled', clear_thinking: true })
+    expect(sentBodies[0]).not.toHaveProperty('reasoning_effort')
+  })
+
   it('maps Anthropic usage where input_tokens excludes cache reads and writes', async () => {
     const fetchImpl: typeof fetch = async () =>
       new Response(JSON.stringify({

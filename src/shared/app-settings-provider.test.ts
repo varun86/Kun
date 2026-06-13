@@ -909,7 +909,11 @@ describe('provider presets', () => {
       }
     })
     expect(zhipu && modelProviderPresetProfile(zhipu).modelProfiles['glm-5.2'].reasoning)
-      .toBeUndefined()
+      .toEqual({
+        supportedEfforts: ['off', 'high', 'max'],
+        defaultEffort: 'max',
+        requestProtocol: 'glm-chat-completions'
+      })
 
     expect(zai && modelProviderPresetProfile(zai)).toMatchObject({
       id: 'zai-coding-plan',
@@ -925,6 +929,12 @@ describe('provider presets', () => {
         })
       }
     })
+    expect(zai && modelProviderPresetProfile(zai).modelProfiles['glm-5'].reasoning)
+      .toEqual({
+        supportedEfforts: ['off', 'high', 'max'],
+        defaultEffort: 'max',
+        requestProtocol: 'glm-chat-completions'
+      })
 
     expect(kimiCode && modelProviderPresetProfile(kimiCode)).toMatchObject({
       id: 'kimi-code',

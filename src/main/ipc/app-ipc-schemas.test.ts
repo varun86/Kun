@@ -304,11 +304,19 @@ describe('app-ipc-schemas', () => {
   it('strips legacy settings keys before validating settings patches', () => {
     const payload = settingsPatchSchema.parse({
       locale: 'zh',
+      disabledSkillIds: ['legacy-skill'],
       reasonix: { model: 'legacy-reasoner' },
       quickChat: { enabled: true },
+      provider: {
+        providers: [{
+          id: 'legacy-vision-provider',
+          imageRecognition: { enabled: true }
+        }]
+      },
       agents: {
         kun: {
-          port: 9001
+          port: 9001,
+          imageRecognition: { enabled: true }
         },
         reasonix: {
           model: 'legacy-reasoner'
@@ -320,7 +328,10 @@ describe('app-ipc-schemas', () => {
     })
 
     expect(payload.locale).toBe('zh')
+    expect(payload.provider?.providers?.[0]?.imageRecognition).toEqual({ enabled: true })
     expect(payload.agents?.kun?.port).toBe(9001)
+    expect(payload.agents?.kun?.imageRecognition).toEqual({ enabled: true })
+    expect('disabledSkillIds' in payload).toBe(false)
     expect('reasonix' in payload).toBe(false)
     expect('quickChat' in payload).toBe(false)
     expect('reasonix' in (payload.agents ?? {})).toBe(false)
