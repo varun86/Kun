@@ -48,7 +48,12 @@ import {
 import { defaultKunDataDir } from './runtime/kun-adapter'
 import { isKunHealthResponseBody } from './kun-health'
 import { appendManagedLogLine } from './logger'
-import { guiSkillRootsForRuntime, normalizeSkillRootPath } from './services/skill-service'
+import {
+  comparableSkillRootPath,
+  guiSkillManagedComparablePaths,
+  guiSkillRootsForRuntime,
+  normalizeSkillRootPath
+} from './services/skill-service'
 
 let child: ChildProcess | null = null
 let childLogCapture: KunChildLogCapture | null = null
@@ -481,8 +486,16 @@ async function skillCapabilityConfigForRuntime(
   existing: Record<string, unknown>,
   settings?: AppSettingsV1
 ): Promise<Record<string, unknown>> {
+  // Carry over only the roots a user added by hand to the Kun config file.
+  // Drop previously-persisted GUI-managed roots so disabling a directory in
+  // settings actually removes it — otherwise a toggled-off root would stick
+  // around forever via `existing.roots`.
+  const managed = guiSkillManagedComparablePaths(settings)
+  const manualExisting = stringArrayValue(existing.roots)
+    .map(normalizeSkillRootPath)
+    .filter((path) => path.length > 0 && !managed.has(comparableSkillRootPath(path)))
   const roots = uniqueStrings([
-    ...stringArrayValue(existing.roots).map(normalizeSkillRootPath),
+    ...manualExisting,
     ...(await guiSkillRootsForRuntime(settings)).map((root) => root.path)
   ])
   return {

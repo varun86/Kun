@@ -467,6 +467,7 @@ const writeSettingsPatchSchema = z.object({
 const clawSkillPatchSchema = z.object({
   defaultNames: z.array(trimmedString(128)).max(128).optional(),
   extraDirs: z.array(trimmedString(MAX_PATH_LENGTH)).max(128).optional(),
+  disabledDirs: z.array(trimmedString(MAX_PATH_LENGTH)).max(128).optional(),
   promptPrefix: z.string().max(MAX_CHANNEL_TEXT_LENGTH).optional()
 }).strict()
 
@@ -588,7 +589,8 @@ const clawSettingsPatchSchema = z.object({
 
 const scheduleSkillPatchSchema = z.object({
   defaultNames: z.array(trimmedString(128)).max(128).optional(),
-  extraDirs: z.array(trimmedString(MAX_PATH_LENGTH)).max(128).optional()
+  extraDirs: z.array(trimmedString(MAX_PATH_LENGTH)).max(128).optional(),
+  disabledDirs: z.array(trimmedString(MAX_PATH_LENGTH)).max(128).optional()
 }).strict()
 
 const scheduleInternalPatchSchema = z.object({

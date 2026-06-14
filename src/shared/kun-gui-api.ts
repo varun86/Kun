@@ -120,6 +120,20 @@ export type SkillListItem = {
 export type SkillListResult =
   | { ok: true; skills: SkillListItem[]; validationErrors: Array<{ root: string; message: string }> }
   | { ok: false; message: string }
+export type SkillRootListItem = {
+  id: string
+  disableKey: string
+  path: string
+  scope: 'project' | 'global'
+  source: 'common' | 'extra'
+  labelKey?: string
+  exists: boolean
+  enabled: boolean
+  skillCount: number
+}
+export type SkillRootListResult =
+  | { ok: true; roots: SkillRootListItem[] }
+  | { ok: false; message: string }
 export type UiPluginListIpcResult = { plugins: UiPluginListItem[] }
 export type UiPluginInstallIpcResult =
   | { canceled: true }
@@ -204,6 +218,7 @@ export type KunGuiApi = {
   pickWorkspaceDirectory: (defaultPath?: string) => Promise<WorkspacePickResult>
   confirmDialog: (options: ConfirmDialogOptions) => Promise<boolean>
   listSkills: (workspaceRoot?: string) => Promise<SkillListResult>
+  listSkillRoots: (workspaceRoot?: string) => Promise<SkillRootListResult>
   saveSkillFile: (rootPath: string, skillName: string, content: string) => Promise<SkillSaveResult>
   openSkillRoot: (rootPath: string) => Promise<PathOpenResult>
   listUiPlugins: () => Promise<UiPluginListIpcResult>

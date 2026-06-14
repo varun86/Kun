@@ -25,12 +25,7 @@ import type {
 import type { WriteInlineCompletionDebugEntry } from '@shared/write-inline-completion'
 import { applyTheme, applyUiFontScale } from '../lib/apply-theme'
 import { formatWorkspacePickerError } from '../lib/format-workspace-picker-error'
-import {
-  joinFsPath,
-  loadPreferredSkillRootId,
-  savePreferredSkillRootId,
-  type SkillRootId
-} from '../lib/skill-root-preference'
+import type { SkillRootListItem } from '@shared/kun-gui-api'
 import { normalizeWorkspaceRoot } from '../lib/workspace-path'
 import { useChatStore, type SettingsRouteSection } from '../store/chat-store'
 import { SettingsSidebar } from './SettingsSidebar'
@@ -64,12 +59,6 @@ import {
 type SettingsCategory = 'general' | 'providers' | 'write' | 'imageGeneration' | 'mediaGeneration' | 'speechToText' | 'agents' | 'permissions' | 'shortcuts' | 'easterEgg' | 'claw' | 'updates' | 'debug'
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
 type SettingsPatch = AppSettingsPatch
-type SkillRootOption = {
-  id: SkillRootId
-  label: string
-  path: string
-  available: boolean
-}
 type InlineNotice = {
   tone: 'success' | 'error' | 'info'
   message: string
@@ -101,7 +90,8 @@ export function SettingsView(): ReactElement {
   const [showRuntimeToken, setShowRuntimeToken] = useState(false)
   const [logPath, setLogPath] = useState('')
   const [logDirOpenError, setLogDirOpenError] = useState<string | null>(null)
-  const [skillRootId, setSkillRootId] = useState<SkillRootId>(() => loadPreferredSkillRootId())
+  const [skillRoots, setSkillRoots] = useState<SkillRootListItem[]>([])
+  const [skillRootsLoading, setSkillRootsLoading] = useState(false)
   const [skillNotice, setSkillNotice] = useState<InlineNotice | null>(null)
   const [mcpConfigPath, setMcpConfigPath] = useState('~/.kun/mcp.json')
   const [mcpConfigText, setMcpConfigText] = useState('')
@@ -328,52 +318,24 @@ export function SettingsView(): ReactElement {
     return null
   }, [form, formPort, t])
 
-  const skillRootOptions = useMemo<SkillRootOption[]>(() => {
-    const workspaceRoot = normalizeWorkspaceRoot(formWorkspaceRoot)
-    const hasWorkspace = !!workspaceRoot
-    return [
-      {
-        id: 'workspace-agents',
-        label: tCommon('pluginSkillRootWorkspaceAgents'),
-        path: workspaceRoot ? joinFsPath(workspaceRoot, '.agents/skills') : '',
-        available: hasWorkspace
-      },
-      {
-        id: 'workspace-skills',
-        label: tCommon('pluginSkillRootWorkspaceSkills'),
-        path: workspaceRoot ? joinFsPath(workspaceRoot, 'skills') : '',
-        available: hasWorkspace
-      },
-      {
-        id: 'global-agents',
-        label: tCommon('pluginSkillRootGlobalAgents'),
-        path: '~/.agents/skills',
-        available: true
-      },
-      {
-        id: 'global-deepseek',
-        label: tCommon('pluginSkillRootGlobalDeepseek'),
-        path: '~/.kun/skills',
-        available: true
-      }
-    ]
-  }, [formWorkspaceRoot, tCommon])
-
-  const selectedSkillRoot =
-    skillRootOptions.find((option) => option.id === skillRootId && option.available) ??
-    skillRootOptions.find((option) => option.available)
+  const refreshSkillRoots = useCallback(async (): Promise<void> => {
+    if (typeof window.kunGui?.listSkillRoots !== 'function') return
+    setSkillRootsLoading(true)
+    try {
+      const workspaceRoot = normalizeWorkspaceRoot(formWorkspaceRoot)
+      const result = await window.kunGui.listSkillRoots(workspaceRoot || undefined)
+      if (result.ok) setSkillRoots(result.roots)
+    } catch {
+      /* listing skill roots is best-effort; keep the last known list */
+    } finally {
+      setSkillRootsLoading(false)
+    }
+  }, [formWorkspaceRoot])
 
   useEffect(() => {
-    const selectedOption = skillRootOptions.find((option) => option.id === skillRootId && option.available)
-    if (selectedOption) {
-      savePreferredSkillRootId(skillRootId)
-      return
-    }
-    const fallback = skillRootOptions.find((option) => option.available)
-    if (fallback && fallback.id !== skillRootId) {
-      setSkillRootId(fallback.id)
-    }
-  }, [skillRootId, skillRootOptions])
+    if (category !== 'agents') return
+    void refreshSkillRoots()
+  }, [category, refreshSkillRoots])
 
   const loadMcpConfig = async (): Promise<void> => {
     if (typeof window.kunGui?.getKunConfigFile !== 'function') return
@@ -400,17 +362,33 @@ export function SettingsView(): ReactElement {
     void loadMcpConfig()
   }, [category, mcpLoaded, mcpLoading])
 
-  const openSkillRoot = async (): Promise<void> => {
-    if (!selectedSkillRoot?.path || !selectedSkillRoot.available) {
+  const openSkillRoot = async (path: string): Promise<void> => {
+    if (!path) {
       setSkillNotice({ tone: 'error', message: t('skillsRootUnavailable') })
       return
     }
     if (typeof window.kunGui?.openSkillRoot !== 'function') return
     setSkillNotice(null)
-    const result = await window.kunGui.openSkillRoot(selectedSkillRoot.path)
+    const result = await window.kunGui.openSkillRoot(path)
     if (!result.ok) {
       setSkillNotice({ tone: 'error', message: result.message ?? t('applyFailed') })
     }
+  }
+
+  const toggleSkillRoot = (root: SkillRootListItem, enabled: boolean): void => {
+    const current = form?.claw.skills.disabledDirs ?? []
+    const keys = new Set([root.disableKey, root.id])
+    const nextDisabled = enabled
+      ? current.filter((entry) => !keys.has(entry))
+      : [...new Set([...current, root.disableKey])]
+    update({ claw: { skills: { disabledDirs: nextDisabled } } })
+    // Optimistically reflect the toggle so the row responds before the
+    // debounced save round-trips; skill counts are unaffected by toggling.
+    setSkillRoots((roots) =>
+      roots.map((item) =>
+        item.id === root.id && item.path === root.path ? { ...item, enabled } : item
+      )
+    )
   }
 
   const saveMcpConfig = async (): Promise<void> => {
@@ -821,10 +799,9 @@ export function SettingsView(): ReactElement {
     skillSectionRef,
     mcpSectionRef,
     permissionsSectionRef,
-    selectedSkillRoot,
-    skillRootOptions,
-    skillRootId,
-    setSkillRootId,
+    skillRoots,
+    skillRootsLoading,
+    toggleSkillRoot,
     skillNotice,
     openSkillRoot,
     openPlugins,

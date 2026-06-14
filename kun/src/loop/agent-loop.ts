@@ -78,6 +78,7 @@ import { TODO_LIST_TOOL_NAME, TODO_WRITE_TOOL_NAME } from '../adapters/tool/todo
 import { shellRuntimeInstruction } from '../adapters/tool/builtin-tool-utils.js'
 
 const PARALLEL_READ_ONLY_TOOL_NAMES = new Set(['read', 'grep', 'find', 'ls'])
+const DELEGATE_TASK_TOOL_NAME = 'delegate_task'
 const MAX_PARALLEL_TOOL_CALLS = 3
 const MAX_TURN_MODEL_STEPS = 64
 const MAX_TOOL_CATALOG_SNAPSHOTS = 256
@@ -355,6 +356,23 @@ function allowedToolNamesWithGuiStateTools(
   return [...next]
 }
 
+/**
+ * Intersect an optional allow-list with a hard-forced allow-list. Used to
+ * clamp a subagent loop to read-only tools: the forced list wins, but any
+ * narrower skill-imposed list is preserved. Returns the forced list when no
+ * base restriction exists, and leaves the base untouched when nothing is
+ * forced (the main agent path).
+ */
+function intersectAllowedToolNames(
+  base: readonly string[] | undefined,
+  forced: readonly string[] | undefined
+): readonly string[] | undefined {
+  if (!forced) return base
+  if (!base) return [...forced]
+  const forcedSet = new Set(forced)
+  return base.filter((name) => forcedSet.has(name))
+}
+
 export type AgentLoopOptions = {
   threadStore: ThreadStore
   sessionStore: SessionStore
@@ -382,6 +400,12 @@ export type AgentLoopOptions = {
   toolArgumentRepair?: {
     maxStringBytes?: number
   }
+  /**
+   * Hard allow-list intersected into every tool context for this loop. Used
+   * by read-only subagents to clamp the inherited tool host to investigation
+   * tools — enforced at both the schema (listTools) and execute layers.
+   */
+  forcedAllowedToolNames?: readonly string[]
   /**
    * Lifecycle hooks (UserPromptSubmit, TurnStart, TurnEnd, PreCompact).
    * Tool phases are handled by the tool host; the loop ignores them.
@@ -850,9 +874,12 @@ export class AgentLoop {
     const activeTodoInstruction = planTurnActive
       ? null
       : todoContinuationInstruction(thread?.todos)
-    const allowedToolNames = allowedToolNamesWithGuiStateTools(
-      skillResolution.allowedToolNames,
-      activeGoalInstruction !== null
+    const allowedToolNames = intersectAllowedToolNames(
+      allowedToolNamesWithGuiStateTools(
+        skillResolution.allowedToolNames,
+        activeGoalInstruction !== null
+      ),
+      this.opts.forcedAllowedToolNames
     )
     // IM/headless turns run without the user-input gate; the tools key
     // their advertisement off `awaitUserInput`, so omitting it hides
@@ -1377,14 +1404,20 @@ export class AgentLoop {
         continue
       }
 
+      // Keep batches homogeneous: delegation children fan out together (the
+      // runtime semaphore bounds real concurrency), while built-in read-only
+      // tools stay capped at MAX_PARALLEL_TOOL_CALLS.
+      const headIsDelegation = this.isParallelDelegationCall(call, input.toolProviderKinds)
+      const batchCap = headIsDelegation ? input.calls.length : MAX_PARALLEL_TOOL_CALLS
       const batch: ToolCallLike[] = [call]
       index += 1
       let suppressedAfterBatch: { call: ToolCallLike; reason?: string } | undefined
 
-      while (batch.length < MAX_PARALLEL_TOOL_CALLS && index < input.calls.length) {
+      while (batch.length < batchCap && index < input.calls.length) {
         const next = input.calls[index]
         if (!next) break
         if (!this.isParallelSafeToolCall(next, input.approvalPolicy, input.toolProviderKinds)) break
+        if (this.isParallelDelegationCall(next, input.toolProviderKinds) !== headIsDelegation) break
 
         const nextStorm = this.toolStormBreakers.get(input.turnId)?.inspect(next)
         if (nextStorm?.suppress) {
@@ -1434,10 +1467,25 @@ export class AgentLoop {
     approvalPolicy: ToolHostContext['approvalPolicy'],
     toolProviderKinds: ReadonlyMap<string, ToolProviderKind | undefined>
   ): boolean {
+    // Untrusted/never prompt on every tool, so parallel fan-out is unsafe.
+    if (approvalPolicy === 'untrusted' || approvalPolicy === 'never') return false
+    // Delegated children are isolated runs; multiple in one assistant message
+    // are independent and safe to fan out. The delegation runtime caps real
+    // concurrency at maxParallel and queues the overflow.
+    if (this.isParallelDelegationCall(call, toolProviderKinds)) return true
     if (!PARALLEL_READ_ONLY_TOOL_NAMES.has(call.toolName)) return false
     if (call.toolKind && call.toolKind !== 'tool_call') return false
-    if (approvalPolicy === 'untrusted' || approvalPolicy === 'never') return false
     return toolProviderKinds.get(call.toolName) === 'built-in'
+  }
+
+  private isParallelDelegationCall(
+    call: ToolCallLike,
+    toolProviderKinds: ReadonlyMap<string, ToolProviderKind | undefined>
+  ): boolean {
+    return (
+      call.toolName === DELEGATE_TASK_TOOL_NAME &&
+      toolProviderKinds.get(call.toolName) === 'delegation'
+    )
   }
 
   private createToolContext(input: {

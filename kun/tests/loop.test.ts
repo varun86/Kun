@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { InMemoryEventBus } from '../src/adapters/in-memory-event-bus.js'
 import { LocalToolHost, buildDefaultLocalTools } from '../src/adapters/tool/local-tool-host.js'
+import { CapabilityRegistry } from '../src/adapters/tool/capability-registry.js'
 import { CREATE_PLAN_TOOL_NAME } from '../src/adapters/tool/create-plan-tool.js'
 import { GET_GOAL_TOOL_NAME, UPDATE_GOAL_TOOL_NAME } from '../src/adapters/tool/goal-tools.js'
 import { FileThreadStore, FileSessionStore } from '../src/adapters/file/index.js'
@@ -589,6 +590,82 @@ describe('AgentLoop', () => {
     expect(status).toBe('completed')
     expect(started).toEqual(['read', 'grep'])
     expect(resultCallIds).toEqual(['call_read', 'call_grep'])
+  })
+
+  it('fans out multiple delegate_task calls from one message in a single parallel batch', async () => {
+    const started: string[] = []
+    let resolveBothStarted!: () => void
+    let releaseChildren!: () => void
+    const bothStarted = new Promise<void>((resolve) => {
+      resolveBothStarted = resolve
+    })
+    const release = new Promise<void>((resolve) => {
+      releaseChildren = resolve
+    })
+    // A single delegation-kind tool invoked twice in one assistant message.
+    // If the loop ran these sequentially, only the first would start and the
+    // second would never reach `bothStarted` before the release.
+    const delegateTool = LocalToolHost.defineTool({
+      name: 'delegate_task',
+      description: 'fake delegation tool',
+      inputSchema: { type: 'object', properties: { prompt: { type: 'string' } } },
+      policy: 'auto',
+      execute: async (args) => {
+        started.push(String(args.prompt))
+        if (started.length === 2) resolveBothStarted()
+        await release
+        return { output: { summary: `done ${String(args.prompt)}` } }
+      }
+    })
+    const toolHost = new LocalToolHost({
+      registry: new CapabilityRegistry([
+        { id: 'delegation', kind: 'delegation', enabled: true, available: true, tools: [delegateTool] }
+      ])
+    })
+    let calls = 0
+    const h = makeHarness(
+      {
+        provider: 'delegation-model',
+        model: 'delegation-model',
+        async *stream(): AsyncIterable<ModelStreamChunk> {
+          calls += 1
+          if (calls === 1) {
+            yield { kind: 'tool_call_complete', callId: 'call_a', toolName: 'delegate_task', arguments: { prompt: 'a' } }
+            yield { kind: 'tool_call_complete', callId: 'call_b', toolName: 'delegate_task', arguments: { prompt: 'b' } }
+            yield { kind: 'completed', stopReason: 'tool_calls' }
+            return
+          }
+          yield { kind: 'completed', stopReason: 'stop' }
+        }
+      },
+      { toolHost }
+    )
+    await bootstrapThread(h)
+
+    const run = h.loop.runTurn(h.threadId, h.turnId)
+    let startupError: Error | undefined
+    try {
+      await Promise.race([
+        bothStarted,
+        new Promise<void>((_resolve, reject) => {
+          setTimeout(() => reject(new Error(`only started ${started.join(',') || 'none'}`)), 200)
+        })
+      ])
+    } catch (error) {
+      startupError = error instanceof Error ? error : new Error(String(error))
+    } finally {
+      releaseChildren()
+    }
+    const status = await run
+    if (startupError) throw startupError
+
+    const resultCallIds = (await h.sessionStore.loadItems(h.threadId))
+      .filter((item) => item.kind === 'tool_result')
+      .map((item) => item.kind === 'tool_result' ? item.callId : '')
+
+    expect(status).toBe('completed')
+    expect(started.sort()).toEqual(['a', 'b'])
+    expect(resultCallIds).toEqual(['call_a', 'call_b'])
   })
 
 	  it('repairs wrapped tool arguments before persisting and dispatching calls', async () => {

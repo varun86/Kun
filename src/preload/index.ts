@@ -29,6 +29,8 @@ const api = {
     ipcRenderer.invoke('dialog:confirm', options),
   listSkills: (workspaceRoot) =>
     ipcRenderer.invoke('skill:list', { workspaceRoot }),
+  listSkillRoots: (workspaceRoot) =>
+    ipcRenderer.invoke('skill:list-roots', { workspaceRoot }),
   saveSkillFile: (rootPath, skillName, content) =>
     ipcRenderer.invoke('skill:save-file', { rootPath, skillName, content }),
   openSkillRoot: (rootPath) =>

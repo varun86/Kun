@@ -111,7 +111,7 @@ import { requestWriteInfographic } from '../services/write-infographic-service'
 import { authorizePrototypePath } from '../services/prototype-embed-registry'
 import { requestSpeechTranscription } from '../services/speech-to-text-service'
 import { copyWriteDocumentAsRichText, exportWriteDocument } from '../services/write-export-service'
-import { listGuiSkills } from '../services/skill-service'
+import { listGuiSkillRoots, listGuiSkills } from '../services/skill-service'
 
 type GuiUpdaterModule = typeof import('../gui-updater')
 
@@ -637,6 +637,12 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
     const request = parseIpcPayload('skill:list', skillListPayloadSchema, payload)
     const settings = await store.load()
     return listGuiSkills(settings, request.workspaceRoot)
+  })
+
+  ipcMain.handle('skill:list-roots', async (_, payload: unknown) => {
+    const request = parseIpcPayload('skill:list-roots', skillListPayloadSchema, payload)
+    const settings = await store.load()
+    return listGuiSkillRoots(settings, request.workspaceRoot)
   })
 
   ipcMain.handle('skill:open-root', async (_, rootPath: unknown) => {

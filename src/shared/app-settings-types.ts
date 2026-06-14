@@ -420,6 +420,11 @@ export type AppBehaviorConfigV1 = {
 export type ScheduleSkillSettingsV1 = {
   defaultNames: string[]
   extraDirs: string[]
+  /**
+   * Discovered skill roots the user turned off. Holds common-directory ids
+   * (e.g. `global-codex`) and/or normalized absolute paths for custom dirs.
+   */
+  disabledDirs: string[]
 }
 
 export type ScheduledTaskScheduleV1 = {
@@ -474,6 +479,11 @@ export type ScheduleSettingsV1 = {
 export type ClawSkillSettingsV1 = {
   defaultNames: string[]
   extraDirs: string[]
+  /**
+   * Discovered skill roots the user turned off. Holds common-directory ids
+   * (e.g. `global-codex`) and/or normalized absolute paths for custom dirs.
+   */
+  disabledDirs: string[]
   promptPrefix: string
 }
 
