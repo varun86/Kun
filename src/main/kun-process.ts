@@ -223,6 +223,16 @@ function appRoot(): string {
     : app.getAppPath()
 }
 
+function resolveNodeScriptCommand(command: string): string {
+  if (command !== process.execPath) return command
+  if (process.platform !== 'darwin') return command
+  return resolveClawScheduleMcpCommand({
+    appPath: app.getAppPath(),
+    execPath: command,
+    isPackaged: app.isPackaged
+  })
+}
+
 export function resolveKunDataDir(runtime: { dataDir: string }): string {
   const trimmed = runtime.dataDir?.trim()
   if (trimmed) return expandHomePath(trimmed)
@@ -304,6 +314,7 @@ async function startKunChildOnce(
   // kun/src/cli/serve-entry.ts). The extra Chromium overhead is only paid
   // when the user actually opted into host control.
   const runAsElectron = process.platform === 'darwin' && runtime.computerUse?.enabled === true
+  const command = runAsElectron ? resolution.command : resolveNodeScriptCommand(resolution.command)
   const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
     KUN_RUNTIME_TOKEN: runtime.runtimeToken,
@@ -311,7 +322,7 @@ async function startKunChildOnce(
   }
   if (!runAsElectron) childEnv.ELECTRON_RUN_AS_NODE = '1'
   else delete childEnv.ELECTRON_RUN_AS_NODE
-  child = spawn(resolution.command, args, {
+  child = spawn(command, args, {
     env: childEnv,
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: false
