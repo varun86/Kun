@@ -200,8 +200,8 @@ describe('kun defaults', () => {
         sqlitePath: ''
       },
       contextCompaction: {
-        defaultSoftThreshold: 16000,
-        defaultHardThreshold: 24000,
+        defaultSoftThreshold: 96000,
+        defaultHardThreshold: 108800,
         summaryMode: 'model',
         summaryTimeoutMs: 15000,
         summaryMaxTokens: 1200,
