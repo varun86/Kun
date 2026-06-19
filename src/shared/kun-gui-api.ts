@@ -12,6 +12,7 @@ import type {
 } from './app-settings'
 import type { EditorListResult, EditorOpenResult, OpenEditorPathOptions } from './editor'
 import type { GitBranchesResult, GitBranchWorktreesResult, GitWorktreeCheckoutResult } from './git-branches'
+import type { GitCheckpointCreateResult, GitCheckpointRestoreResult } from './git-checkpoint'
 import type {
   MergeResult,
   SyncResult,
@@ -304,6 +305,13 @@ export type KunGuiApi = {
   getGitBranches: (workspaceRoot: string) => Promise<GitBranchesResult>
   switchGitBranch: (workspaceRoot: string, branch: string) => Promise<GitBranchesResult>
   createAndSwitchGitBranch: (workspaceRoot: string, branch: string) => Promise<GitBranchesResult>
+  createGitCheckpoint: (params: {
+    workspaceRoot: string
+    threadId: string
+  }) => Promise<GitCheckpointCreateResult>
+  restoreGitCheckpoint: (params: {
+    checkpointId: string
+  }) => Promise<GitCheckpointRestoreResult>
   checkoutGitBranchWorktree: (workspaceRoot: string, branch: string) => Promise<GitWorktreeCheckoutResult>
   createGitBranchWorktree: (workspaceRoot: string, branch: string) => Promise<GitWorktreeCheckoutResult>
   listGitBranchWorktrees: (params: {
