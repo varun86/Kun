@@ -8,6 +8,7 @@ import {
   defaultKunRuntimeSettings,
   defaultModelProviderSettings,
   defaultScheduleSettings,
+  defaultWorkflowSettings,
   defaultWriteSettings,
   type AppSettingsV1,
   type ClawImChannelV1,
@@ -34,6 +35,7 @@ function buildSettings(): AppSettingsV1 {
     keyboardShortcuts: defaultKeyboardShortcuts(),
     write: defaultWriteSettings(),
     schedule: defaultScheduleSettings(),
+    workflow: defaultWorkflowSettings(),
     claw: {
       ...defaultClawSettings(),
       enabled: true,

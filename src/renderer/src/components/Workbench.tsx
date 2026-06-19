@@ -132,6 +132,12 @@ const TerminalPanel = lazy(() =>
 const ScheduleTasksView = lazy(() =>
   import('./schedule/ScheduleTasksView').then((module) => ({ default: module.ScheduleTasksView }))
 )
+const WorkflowView = lazy(() =>
+  import('./workflow/WorkflowView').then((module) => ({ default: module.WorkflowView }))
+)
+const WorkflowRunPanel = lazy(() =>
+  import('./workflow/WorkflowRunPanel').then((module) => ({ default: module.WorkflowRunPanel }))
+)
 
 type PendingSddPlanTarget = {
   planId: string
@@ -348,6 +354,7 @@ export function Workbench(): ReactElement {
     openPlugins,
     openClaw,
     openSchedule,
+    openWorkflow,
     chooseWorkspace,
     clawChannels,
     activeClawChannelId,
@@ -406,6 +413,7 @@ export function Workbench(): ReactElement {
       openPlugins: s.openPlugins,
       openClaw: s.openClaw,
       openSchedule: s.openSchedule,
+      openWorkflow: s.openWorkflow,
       chooseWorkspace: s.chooseWorkspace,
       clawChannels: s.clawChannels,
       activeClawChannelId: s.activeClawChannelId,
@@ -2111,17 +2119,24 @@ export function Workbench(): ReactElement {
     openSchedule()
   }
 
+  const openWorkflowView = (): void => {
+    setConnectPhoneSidebarOpen(false)
+    openWorkflow()
+  }
+
   const toggleConnectPhone = (): void => {
     if (activeSddDraft) dismissActiveSddDraft({ closeAssistant: true })
     openClaw()
     setConnectPhoneSidebarOpen((open) => !open)
   }
 
-  const sidebarView: 'chat' | 'write' | 'claw' | 'schedule' =
+  const sidebarView: 'chat' | 'write' | 'claw' | 'schedule' | 'workflow' =
     route === 'claw' || (route === 'plugins' && pluginHostRoute === 'claw')
       ? 'claw'
       : route === 'schedule'
         ? 'schedule'
+      : route === 'workflow'
+        ? 'workflow'
       : route === 'write'
         ? 'write'
         : 'chat'
@@ -2439,6 +2454,7 @@ export function Workbench(): ReactElement {
               onCodeOpen={openCodeMode}
               onWriteOpen={openWriteMode}
               onScheduleOpen={openScheduleView}
+              onWorkflowOpen={openWorkflowView}
             />
             )}
           </div>
@@ -2472,6 +2488,14 @@ export function Workbench(): ReactElement {
         ) : route === 'schedule' ? (
           <Suspense fallback={<div className="h-full bg-ds-main" />}>
             <ScheduleTasksView
+              leftSidebarCollapsed={leftSidebarCollapsed}
+              onToggleLeftSidebar={toggleLeftSidebar}
+              onOpenThread={openThread}
+            />
+          </Suspense>
+        ) : route === 'workflow' ? (
+          <Suspense fallback={<div className="h-full bg-ds-main" />}>
+            <WorkflowView
               leftSidebarCollapsed={leftSidebarCollapsed}
               onToggleLeftSidebar={toggleLeftSidebar}
               onOpenThread={openThread}
@@ -2701,6 +2725,11 @@ export function Workbench(): ReactElement {
         )}
         {renderPlanPanelOverlay()}
       </main>
+      {route === 'chat' ? (
+        <Suspense fallback={null}>
+          <WorkflowRunPanel enabled />
+        </Suspense>
+      ) : null}
     </div>
   )
 }

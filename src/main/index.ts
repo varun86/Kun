@@ -22,6 +22,7 @@ import {
   getKunRuntimeSettings,
   mergeKunRuntimeSettings,
   mergeClawSettings,
+  mergeWorkflowSettings,
   mergeAppBehaviorSettings,
   mergeModelProviderSettings,
   mergeScheduleSettings,
@@ -53,6 +54,7 @@ import { RestartBudget, type KunRuntimeStatus } from './kun-runtime-supervisor'
 import { configureLogger, logError, logWarn, pruneOnStartup } from './logger'
 import { createClawRuntime, type ClawRuntime } from './claw-runtime'
 import { createScheduleRuntime, type ScheduleRuntime } from './schedule-runtime'
+import { createWorkflowRuntime, type WorkflowRuntime } from './workflow-runtime'
 import { runClawScheduleMcpServerFromArgv } from './claw-schedule-mcp-server'
 import {
   clawScheduleMcpSettingsChanged,
@@ -200,6 +202,7 @@ let store: JsonSettingsStore
 let logDir = ''
 let clawRuntime: ClawRuntime | null = null
 let scheduleRuntime: ScheduleRuntime | null = null
+let workflowRuntime: WorkflowRuntime | null = null
 let managedRuntimesStoppedForQuit = false
 let managedRuntimesStopPromise: Promise<void> | null = null
 let appBehavior: AppBehaviorConfigV1 = normalizeAppBehaviorSettings()
@@ -229,6 +232,7 @@ async function stopManagedRuntimes(): Promise<void> {
   if (!managedRuntimesStopPromise) {
     managedRuntimesStopPromise = (async () => {
       scheduleRuntime?.stop()
+      workflowRuntime?.stop()
       clawRuntime?.stop()
       stopWeixinBridgeRuntime()
       await kunRuntimeAdapter.stopAndWait()
@@ -1421,6 +1425,8 @@ app.whenReady().then(async () => {
   traceStartup('logger configured')
   scheduleRuntime = createScheduleRuntime({ store, runtimeRequest, logError, powerSaveBlocker })
   scheduleRuntime.sync(initial)
+  workflowRuntime = createWorkflowRuntime({ store, runtimeRequest, logError, powerSaveBlocker })
+  workflowRuntime.sync(initial)
   clawRuntime = createClawRuntime({
     store,
     runtimeRequest,
@@ -1464,6 +1470,7 @@ app.whenReady().then(async () => {
       write: mergeWriteSettings(prev.write, partial.write),
       claw: mergeClawSettings(prev.claw, partial.claw),
       schedule: mergeScheduleSettings(prev.schedule, partial.schedule),
+      workflow: mergeWorkflowSettings(prev.workflow, partial.workflow),
       guiUpdate: { ...prev.guiUpdate, ...(partial.guiUpdate ?? {}) }
     })
     if (prev.log.enabled !== next.log.enabled || prev.log.retentionDays !== next.log.retentionDays) {
@@ -1483,6 +1490,7 @@ app.whenReady().then(async () => {
     queueRuntimeSettingsApply(prev, saved)
     try {
       scheduleRuntime?.sync(saved)
+      workflowRuntime?.sync(saved)
       clawRuntime?.sync(saved)
     } catch (error) {
       logError('settings-apply', 'failed to sync schedule/claw runtimes after settings change', {
@@ -1521,6 +1529,7 @@ app.whenReady().then(async () => {
     fetchUpstreamModels: fetchModels,
     getClawRuntime: () => clawRuntime,
     getScheduleRuntime: () => scheduleRuntime,
+    getWorkflowRuntime: () => workflowRuntime,
     startFeishuInstallQrcode,
     pollFeishuInstall,
     startWeixinInstallQrcode,
