@@ -101,6 +101,7 @@ type StoreActionContext = {
 let bootPromise: Promise<void> | null = null
 let clawChannelActivityUnsubscribe: (() => void) | null = null
 let runtimeStatusUnsubscribe: (() => void) | null = null
+let trayActionUnsubscribe: (() => void) | null = null
 
 export function createNavigationActions(
   { set, get, sseAbortRef }: StoreActionContext
@@ -386,6 +387,16 @@ export function createNavigationActions(
                 // On-disk settings were restored by the rollback; refresh the cache.
                 void rendererRuntimeClient.getSettings({ forceRefresh: true }).catch(() => null)
               }
+            }
+          })
+        }
+        if (!trayActionUnsubscribe && typeof window.kunGui.onTrayAction === 'function') {
+          trayActionUnsubscribe = window.kunGui.onTrayAction((action) => {
+            set({ route: 'chat' })
+            if (action.type === 'open-thread') {
+              void get().selectThread(action.threadId)
+            } else {
+              void get().createThread({ forceNew: true })
             }
           })
         }

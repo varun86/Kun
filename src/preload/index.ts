@@ -185,6 +185,14 @@ const api = {
     ipcRenderer.on('claw:channel-activity', wrapped)
     return () => ipcRenderer.removeListener('claw:channel-activity', wrapped)
   },
+  onTrayAction: (handler) => {
+    const wrapped = (
+      _: Electron.IpcRendererEvent,
+      payload: Parameters<typeof handler>[0]
+    ) => handler(payload)
+    ipcRenderer.on('tray:action', wrapped)
+    return () => ipcRenderer.removeListener('tray:action', wrapped)
+  },
   onRuntimeStatus: (handler) => {
     const wrapped = (
       _: Electron.IpcRendererEvent,
