@@ -338,9 +338,9 @@ export function WorkflowView({ leftSidebarCollapsed, onToggleLeftSidebar }: Prop
           key={editingWorkflow.id}
           workflow={editingWorkflow}
           settings={settings}
-          runStatus={status?.nodeStatus[editingWorkflow.id] ?? {}}
+          runStatus={status?.nodeStatus?.[editingWorkflow.id] ?? {}}
           lastResults={lastResults}
-          liveResults={status?.nodeResults[editingWorkflow.id] ?? {}}
+          liveResults={status?.nodeResults?.[editingWorkflow.id] ?? {}}
           running={runningIds.has(editingWorkflow.id)}
           onPersist={handleEditorPersist}
           onRun={() => requestRun(editingWorkflow)}

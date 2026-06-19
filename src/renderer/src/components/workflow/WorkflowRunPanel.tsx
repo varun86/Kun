@@ -86,7 +86,7 @@ export function WorkflowRunPanel({ enabled }: Props): ReactElement | null {
   }, [runningId])
 
   const nodeStatus = useMemo<Record<string, WorkflowNodeRunStatus>>(
-    () => (shownId && status?.nodeStatus[shownId]) || {},
+    () => (shownId && status?.nodeStatus?.[shownId]) || {},
     [shownId, status]
   )
   const isRunning = Boolean(shownId && status?.runningWorkflowIds.includes(shownId))
