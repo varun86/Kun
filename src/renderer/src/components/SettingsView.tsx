@@ -69,10 +69,11 @@ import {
   ProvidersSettingsSection,
   SpeechToTextSettingsSection,
   UpdatesSettingsSection,
-  WriteSettingsSection
+  WriteSettingsSection,
+  TerminalSettingsSection
 } from './settings-sections'
 
-type SettingsCategory = 'general' | 'providers' | 'write' | 'mediaGeneration' | 'speechToText' | 'agents' | 'archives' | 'worktree' | 'memory' | 'shortcuts' | 'easterEgg' | 'claw' | 'updates' | 'debug'
+type SettingsCategory = 'general' | 'providers' | 'write' | 'mediaGeneration' | 'speechToText' | 'agents' | 'archives' | 'permissions' | 'worktree' | 'memory' | 'shortcuts' | 'easterEgg' | 'claw' | 'updates' | 'debug' | 'terminal'
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
 type SettingsPatch = AppSettingsPatch
 type InlineNotice = {
@@ -320,6 +321,10 @@ export function SettingsView(): ReactElement {
       setCategory('updates')
       return
     }
+    if (settingsSection === 'terminal') {
+      setCategory('terminal')
+      return
+    }
     setCategory('agents')
   }, [settingsSection])
 
@@ -337,12 +342,13 @@ export function SettingsView(): ReactElement {
       settingsSection === 'shortcuts' ||
       settingsSection === 'easterEgg' ||
       settingsSection === 'updates' ||
+      settingsSection === 'terminal' ||
       category !== 'agents'
     ) {
       return
     }
     const refs: Record<
-      Exclude<SettingsRouteSection, 'general' | 'providers' | 'write' | 'imageGeneration' | 'mediaGeneration' | 'speechToText' | 'archives' | 'claw' | 'shortcuts' | 'easterEgg' | 'updates'>,
+      Exclude<SettingsRouteSection, 'general' | 'providers' | 'write' | 'imageGeneration' | 'mediaGeneration' | 'speechToText' | 'archives' | 'claw' | 'shortcuts' | 'easterEgg' | 'updates' | 'terminal'>,
       HTMLDivElement | null
     > = {
       agents: agentsSectionRef.current,
@@ -1036,6 +1042,7 @@ export function SettingsView(): ReactElement {
           {category === 'easterEgg' ? <EasterEggSettingsSection ctx={settingsSectionContext} /> : null}
           {category === 'claw' ? <ClawSettingsSection ctx={settingsSectionContext} /> : null}
           {category === 'updates' ? <UpdatesSettingsSection ctx={settingsSectionContext} /> : null}
+          {category === 'terminal' ? <TerminalSettingsSection ctx={settingsSectionContext} /> : null}
           {category === 'debug' ? <LlmDebugSettingsSection ctx={settingsSectionContext} /> : null}
         </div>
       </div>

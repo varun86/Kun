@@ -19,6 +19,7 @@ import {
   defaultKunRuntimeSettings,
   defaultScheduleSettings,
   defaultWorkflowSettings,
+  defaultTerminalSettings,
   defaultWriteSelectionAssistSettings,
   defaultWriteSettings,
   getModelProviderPreset,
@@ -64,6 +65,7 @@ function settings(): AppSettingsV1 {
     claw: defaultClawSettings(),
     schedule: defaultScheduleSettings(),
     workflow: defaultWorkflowSettings(),
+    terminal: defaultTerminalSettings(),
     guiUpdate: { channel: 'stable' },
     codePromptPrefix: '',
     disabledSkillIds: []
