@@ -26,7 +26,11 @@ export function buildDelegationToolProviders(runtime: DelegationRuntime | undefi
             model: { type: 'string', description: 'Override the child model. Defaults to the profile model or server default.' },
             profile: profileNames.length
               ? { type: 'string', enum: profileNames, description: 'Subagent role to apply (model, preamble, tool policy).' }
-              : { type: 'string', description: 'Subagent role to apply (model, preamble, tool policy).' }
+              : { type: 'string', description: 'Subagent role to apply (model, preamble, tool policy).' },
+            detach: {
+              type: 'boolean',
+              description: 'Fire-and-forget. The call returns immediately with a queued/running record; the child keeps executing in the background and can be checked via diagnostics or aborted from the GUI.'
+            }
           },
           required: ['prompt'],
           additionalProperties: false
@@ -43,6 +47,7 @@ export function buildDelegationToolProviders(runtime: DelegationRuntime | undefi
             workspace: typeof args.workspace === 'string' ? args.workspace : context.workspace,
             ...(typeof args.model === 'string' ? { model: args.model } : {}),
             ...(typeof args.profile === 'string' ? { profile: args.profile } : {}),
+            ...(args.detach === true ? { detach: true } : {}),
             signal: context.abortSignal
           })
           return {

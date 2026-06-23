@@ -265,6 +265,69 @@ describe('DelegationRuntime', () => {
     })
   })
 
+  it('returns immediately when detach=true and keeps executing in the background', async () => {
+    const start = deferred<void>()
+    const release = deferred<void>()
+    const runtime = createRuntime({
+      executor: async () => {
+        start.resolve()
+        await release.promise
+        return { summary: 'background done' }
+      }
+    })
+    const queued = await runtime.runChild({
+      parentThreadId: 'thr_detach',
+      parentTurnId: 'turn_detach',
+      prompt: 'long running task',
+      detach: true,
+      signal: new AbortController().signal
+    })
+    // Immediately returns with status 'queued' — synchronous runs would
+    // have returned 'completed' here.
+    expect(queued.status).toBe('queued')
+    // The executor actually runs in the background.
+    await start.promise
+    let diagnostics = await runtime.diagnostics('thr_detach')
+    expect(diagnostics.childRuns[0]?.status).toBe('running')
+    // Release the executor and wait for the record to flip to completed.
+    release.resolve()
+    await waitFor(async () => {
+      diagnostics = await runtime.diagnostics('thr_detach')
+      return diagnostics.childRuns[0]?.status === 'completed'
+    })
+    expect(diagnostics.childRuns[0]?.summary).toBe('background done')
+  })
+
+  it('abortChild signals a detached run and false-returns for unknown ids', async () => {
+    const start = deferred<void>()
+    const runtime = createRuntime({
+      executor: async ({ signal }) => {
+        start.resolve()
+        await new Promise<void>((resolve, reject) => {
+          signal.addEventListener('abort', () => reject(new Error('aborted')))
+        })
+        return { summary: 'unreachable' }
+      }
+    })
+    const queued = await runtime.runChild({
+      parentThreadId: 'thr_abort',
+      parentTurnId: 'turn_abort',
+      prompt: 'long task',
+      detach: true,
+      signal: new AbortController().signal
+    })
+    await start.promise
+    expect(runtime.abortChild(queued.id)).toBe(true)
+    await waitFor(async () => {
+      const diagnostics = await runtime.diagnostics('thr_abort')
+      return diagnostics.childRuns[0]?.status === 'aborted'
+    })
+    // After the run finished the controller is cleaned up via .finally.
+    // Poll because the cleanup runs in a microtask after the run resolves.
+    await waitFor(() => runtime.abortChild(queued.id) === false)
+    expect(runtime.abortChild('child_unknown')).toBe(false)
+  })
+
   it('aggregates child runs by label and model for dashboards', async () => {
     const runtime = createRuntime()
     await runtime.runChild({
