@@ -360,6 +360,8 @@ describe('ClawRuntime', () => {
 
   it('accepts assistant_text items when waiting for a Claw turn result', async () => {
     const settings = buildSettings()
+    settings.agents.kun.approvalPolicy = 'on-request'
+    settings.agents.kun.sandboxMode = 'workspace-write'
     const runtimeRequest = vi.fn(async (_settings, path, init) => {
       if (path === '/v1/threads') {
         return { ok: true, status: 200, body: JSON.stringify({ id: 'thr_1' }) }
@@ -423,16 +425,16 @@ describe('ClawRuntime', () => {
       ([, path, init]) => path === '/v1/threads' && init?.method === 'POST'
     )
     expect(JSON.parse(String(createThreadCall?.[2]?.body ?? '{}'))).toMatchObject({
-      approvalPolicy: 'auto',
-      sandboxMode: 'danger-full-access'
+      approvalPolicy: 'on-request',
+      sandboxMode: 'workspace-write'
     })
     const turnCall = runtimeRequest.mock.calls.find(
       ([, path, init]) => path === '/v1/threads/thr_1/turns' && init?.method === 'POST'
     )
     expect(JSON.parse(String(turnCall?.[2]?.body ?? '{}'))).toMatchObject({
       disableUserInput: true,
-      approvalPolicy: 'auto',
-      sandboxMode: 'danger-full-access'
+      approvalPolicy: 'on-request',
+      sandboxMode: 'workspace-write'
     })
   })
 

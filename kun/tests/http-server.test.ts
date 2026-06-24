@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { dispatchRequest } from '../src/server/http-server.js'
 import { createApprovalRequest } from '../src/domain/approval.js'
 import { makeAssistantTextItem, makeToolCallItem, makeToolResultItem } from '../src/domain/item.js'
@@ -857,6 +857,30 @@ describe('HTTP server', () => {
     const body = (await readJson(decide)) as { decision: string }
     expect(body.decision).toBe('allow')
     await expect(pending).resolves.toBe('allow')
+
+    const replay = await dispatchRequest(
+      h.router,
+      new Request('http://localhost/v1/approvals/appr_1', {
+        method: 'POST',
+        headers: { authorization: 'Bearer tok-1', 'content-type': 'application/json' },
+        body: JSON.stringify({ decision: 'allow' })
+      })
+    )
+    expect(replay.status).toBe(200)
+    expect(await readJson(replay)).toMatchObject({
+      decision: 'allow',
+      alreadyResolved: true
+    })
+
+    const conflict = await dispatchRequest(
+      h.router,
+      new Request('http://localhost/v1/approvals/appr_1', {
+        method: 'POST',
+        headers: { authorization: 'Bearer tok-1', 'content-type': 'application/json' },
+        body: JSON.stringify({ decision: 'deny' })
+      })
+    )
+    expect(conflict.status).toBe(409)
   })
 
   it('resolves GUI user input through both HTTP compatibility endpoints', async () => {
@@ -1269,6 +1293,6 @@ describe('HTTP server', () => {
     )
     expect(response.status).toBe(200)
     const body = (await readJson(response)) as { path: string }
-    expect(body.path).toBe('/tmp')
+    expect(body.path).toBe(resolve('/tmp'))
   })
 })

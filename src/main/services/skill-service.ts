@@ -97,6 +97,13 @@ export async function guiSkillRootsForRuntime(
   ])
 }
 
+export function guiSkillWorkspaceRootsForRuntime(
+  settings: AppSettingsV1 | undefined,
+  workspaceRootOverride?: string
+): string[] {
+  return collectWorkspaceRoots(settings, workspaceRootOverride)
+}
+
 /**
  * Full list of detected common skill directories + configured extra dirs for
  * the settings UI, including ones the user disabled or that do not exist yet,

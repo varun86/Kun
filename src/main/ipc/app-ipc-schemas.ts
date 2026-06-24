@@ -1350,6 +1350,11 @@ export const skillListPayloadSchema = z
   .strict()
 
 export const rootPathSchema = trimmedString(MAX_PATH_LENGTH)
+export const localPdfTextTargetPayloadSchema = z
+  .object({
+    path: rootPathSchema
+  })
+  .strict()
 export const deepseekConfigContentSchema = z.string().max(MAX_CONFIG_FILE_BYTES)
 
 export const workspaceRootSchema = trimmedString(MAX_PATH_LENGTH)

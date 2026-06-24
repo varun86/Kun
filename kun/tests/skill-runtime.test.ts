@@ -109,7 +109,8 @@ describe('SkillRuntime', () => {
       const runtime = await createRuntime()
 
       expect(runtime.diagnostics().skills.map((skill) => skill.id)).toContain('linked')
-      expect(runtime.resolveTurn({ prompt: '/linked go', workspace: root }).activeSkillIds).toEqual(['linked'])
+      await expect(runtime.resolveTurn({ prompt: '/linked go', workspace: root }))
+        .resolves.toMatchObject({ activeSkillIds: ['linked'] })
     } finally {
       await rm(realDir, { recursive: true, force: true })
     }
@@ -129,7 +130,7 @@ describe('SkillRuntime', () => {
     }, 'small instructions')
     const runtime = await createRuntime({ instructionBudgetBytes: 600 })
 
-    const resolution = runtime.resolveTurn({
+    const resolution = await runtime.resolveTurn({
       prompt: 'Please handle TypeScript in src/app.ts',
       workspace: root
     })
@@ -157,6 +158,60 @@ describe('SkillRuntime', () => {
     expect(catalog).toContain('### How to use skills')
   })
 
+  it('scopes the dynamic skill catalog to the current workspace', async () => {
+    const workspaceA = await mkdtemp(join(tmpdir(), 'kun-skill-workspace-a-'))
+    const workspaceB = await mkdtemp(join(tmpdir(), 'kun-skill-workspace-b-'))
+    try {
+      const rootA = join(workspaceA, '.agents', 'skills')
+      const rootB = join(workspaceB, '.agents', 'skills')
+      await writeSkillAt(rootA, 'alpha', {
+        id: 'alpha',
+        name: 'Alpha',
+        triggers: { commands: ['/alpha'] }
+      }, 'alpha instructions')
+      await writeSkillAt(rootB, 'beta', {
+        id: 'beta',
+        name: 'Beta',
+        triggers: { commands: ['/beta'] }
+      }, 'beta instructions')
+
+      const config = KunCapabilitiesConfig.parse({
+        skills: {
+          enabled: true,
+          roots: [rootA, rootB],
+          workspaceRoots: [workspaceA, workspaceB],
+          legacySkillMd: true
+        }
+      })
+      const runtime = await SkillRuntime.create(config.skills)
+      const workspaceAResolution = await runtime.resolveTurn({ prompt: '/alpha run', workspace: workspaceA })
+      const workspaceBResolution = await runtime.resolveTurn({ prompt: '/beta run', workspace: workspaceB })
+
+      expect(workspaceAResolution.catalogInstruction).toContain('Alpha')
+      expect(workspaceAResolution.catalogInstruction).not.toContain('Beta')
+      expect(workspaceAResolution.activeSkillIds).toEqual(['alpha'])
+      expect(workspaceBResolution.catalogInstruction).toContain('Beta')
+      expect(workspaceBResolution.catalogInstruction).not.toContain('Alpha')
+      expect(workspaceBResolution.activeSkillIds).toEqual(['beta'])
+
+      const disabledConfig = KunCapabilitiesConfig.parse({
+        skills: {
+          enabled: true,
+          roots: [rootA],
+          workspaceRoots: [workspaceA, workspaceB],
+          legacySkillMd: true
+        }
+      })
+      const disabledRuntime = await SkillRuntime.create(disabledConfig.skills)
+      const disabledResolution = await disabledRuntime.resolveTurn({ prompt: '/beta run', workspace: workspaceB })
+      expect(disabledResolution.catalogInstruction).toBeUndefined()
+      expect(disabledResolution.activeSkillIds).toEqual([])
+    } finally {
+      await rm(workspaceA, { recursive: true, force: true })
+      await rm(workspaceB, { recursive: true, force: true })
+    }
+  })
+
   it('truncates the catalog when the byte budget is exceeded', async () => {
     await writeSkill('one', { id: 'one', name: 'One', description: 'd'.repeat(400) }, 'b')
     await writeSkill('two', { id: 'two', name: 'Two', description: 'd'.repeat(400) }, 'b')
@@ -168,7 +223,7 @@ describe('SkillRuntime', () => {
   })
 
   it('returns no catalog when skills are disabled', async () => {
-    const runtime = await SkillRuntime.create({ enabled: false, roots: [], legacySkillMd: true })
+    const runtime = await SkillRuntime.create({ enabled: false, roots: [], workspaceRoots: [], legacySkillMd: true })
     expect(runtime.catalogInstruction()).toBeUndefined()
   })
 
@@ -182,7 +237,7 @@ describe('SkillRuntime', () => {
     const runtime = await createRuntime()
 
     for (const ref of ['gamma', '$gamma', '@gamma', 'skill:gamma']) {
-      const result = runtime.loadSkillById(ref)
+      const result = await runtime.loadSkillById(ref)
       expect('error' in result).toBe(false)
       if ('error' in result) continue
       expect(result.skillId).toBe('gamma')
@@ -197,7 +252,7 @@ describe('SkillRuntime', () => {
     await writeSkill('known', { id: 'known', name: 'Known' }, 'body')
     const runtime = await createRuntime()
 
-    const result = runtime.loadSkillById('does-not-exist')
+    const result = await runtime.loadSkillById('does-not-exist')
     expect('error' in result).toBe(true)
     if ('error' in result) expect(result.error).toContain('known')
   })
@@ -206,7 +261,7 @@ describe('SkillRuntime', () => {
     await writeSkill('huge', { id: 'huge', name: 'Huge' }, 'z'.repeat(5_000))
     const runtime = await createRuntime({ instructionBudgetBytes: 1_000 })
 
-    const result = runtime.loadSkillById('huge')
+    const result = await runtime.loadSkillById('huge')
     expect('error' in result).toBe(false)
     if ('error' in result) return
     expect(result.truncated).toBe(true)
@@ -228,7 +283,7 @@ describe('SkillRuntime', () => {
       allowedTools: ['bash']
     }, 'Use bash')
     const runtime = await createRuntime()
-    const resolution = runtime.resolveTurn({
+    const resolution = await runtime.resolveTurn({
       prompt: '/readonly inspect',
       workspace: root
     })
@@ -283,7 +338,8 @@ describe('SkillRuntime', () => {
     await runtime.refresh()
 
     expect(runtime.count()).toBe(1)
-    expect(runtime.resolveTurn({ prompt: '/new run', workspace: root }).activeSkillIds).toEqual(['new'])
+    await expect(runtime.resolveTurn({ prompt: '/new run', workspace: root }))
+      .resolves.toMatchObject({ activeSkillIds: ['new'] })
   })
 
   it('injects active Skills into AgentLoop context and turn metadata', async () => {
@@ -326,7 +382,7 @@ describe('SkillRuntime', () => {
 
     await h.loop.runTurn(h.threadId, h.turnId)
 
-    expect(seenRequest?.contextInstructions?.[0]).toContain('Always inspect the diff first.')
+    expect(seenRequest?.contextInstructions?.join('\n')).toContain('Always inspect the diff first.')
     expect(seenRequest?.tools.map((tool) => tool.name)).toEqual(['read'])
     const turn = await h.turns.getTurn(h.threadId, h.turnId)
     expect(turn?.activeSkillIds).toEqual(['review'])
@@ -338,6 +394,7 @@ describe('SkillRuntime', () => {
       skills: {
         enabled: true,
         roots: [root],
+        workspaceRoots: [],
         legacySkillMd: true
       }
     })
@@ -349,7 +406,16 @@ describe('SkillRuntime', () => {
     manifest: Record<string, unknown>,
     entry: string
   ): Promise<void> {
-    const dir = join(root, folder)
+    await writeSkillAt(root, folder, manifest, entry)
+  }
+
+  async function writeSkillAt(
+    parentRoot: string,
+    folder: string,
+    manifest: Record<string, unknown>,
+    entry: string
+  ): Promise<void> {
+    const dir = join(parentRoot, folder)
     await mkdir(dir, { recursive: true })
     const entryName = typeof manifest.entry === 'string' ? manifest.entry : 'SKILL.md'
     await writeFile(join(dir, 'skill.json'), JSON.stringify(manifest), 'utf8')

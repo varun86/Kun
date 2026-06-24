@@ -314,6 +314,10 @@ function imageMimeTypeFromFileName(name: string | undefined): string | undefined
   return undefined
 }
 
+function isPdfFile(file: File): boolean {
+  return file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
+}
+
 function comparablePath(path: string | undefined): string {
   return (path ?? '').replace(/\\/g, '/').replace(/\/+$/g, '').toLowerCase()
 }
@@ -1488,7 +1492,8 @@ export function FloatingComposer({
   const handleComposerDragOver = (event: ReactDragEvent<HTMLDivElement>): void => {
     const dataTransferTypes = Array.from(event.dataTransfer.types ?? [])
     const canAcceptImages = canPickAttachment && imageTransferHasImages(event.dataTransfer)
-    if (!dataTransferTypes.includes('Files') && !canAcceptImages) return
+    const canAcceptPdf = canPickAttachment && Array.from(event.dataTransfer.files ?? []).some(isPdfFile)
+    if (!dataTransferTypes.includes('Files') && !canAcceptImages && !canAcceptPdf) return
     event.preventDefault()
     event.dataTransfer.dropEffect = 'copy'
   }
@@ -1521,11 +1526,12 @@ export function FloatingComposer({
     const rawFiles = Array.from(event.dataTransfer.files ?? [])
     const isImageLike = (file: File): boolean =>
       isImageMimeType(file.type) || Boolean(imageMimeTypeFromFileName(file.name))
-    const pathFiles = rawFiles.filter((file) => !isImageLike(file))
-    if (imageFiles.length === 0 && pathFiles.length === 0) return
+    const pdfFiles = canPickAttachment ? rawFiles.filter(isPdfFile) : []
+    const pathFiles = rawFiles.filter((file) => !isImageLike(file) && !isPdfFile(file))
+    if (imageFiles.length === 0 && pdfFiles.length === 0 && pathFiles.length === 0) return
     event.preventDefault()
-    if (imageFiles.length > 0 && onPickAttachments) {
-      onPickAttachments(imageFiles)
+    if ((imageFiles.length > 0 || pdfFiles.length > 0) && onPickAttachments) {
+      onPickAttachments([...imageFiles, ...pdfFiles])
     }
     if (pathFiles.length > 0) {
       const paths: string[] = []
@@ -2053,10 +2059,19 @@ export function FloatingComposer({
                   <span
                     key={attachment.id}
                     className="ds-no-drag inline-flex h-7 max-w-full items-center gap-1.5 rounded-lg border border-ds-border-muted bg-ds-card/80 px-2 text-[12px] font-medium text-ds-muted"
-                    title={attachment.id}
+                    title={attachment.name || attachment.id}
                   >
-                    <ImagePlus className="h-3.5 w-3.5 shrink-0 text-ds-faint" strokeWidth={1.8} />
+                    {attachment.kind === 'document' ? (
+                      <FileText className="h-3.5 w-3.5 shrink-0 text-ds-faint" strokeWidth={1.8} />
+                    ) : (
+                      <ImagePlus className="h-3.5 w-3.5 shrink-0 text-ds-faint" strokeWidth={1.8} />
+                    )}
                     <span className="max-w-40 truncate">{attachment.name || attachment.id}</span>
+                    {attachment.kind === 'document' && attachment.pageCount ? (
+                      <span className="shrink-0 text-[11px] text-ds-faint">
+                        {attachment.pageCount}p{attachment.truncated ? '+' : ''}
+                      </span>
+                    ) : null}
                     {onRemoveAttachment ? (
                       <button
                         type="button"
@@ -2082,7 +2097,7 @@ export function FloatingComposer({
             <input
               ref={fileInputRef}
               type="file"
-              accept="image/png,image/jpeg,image/webp"
+              accept="image/png,image/jpeg,image/webp,application/pdf,.pdf"
               multiple
               className="hidden"
               onChange={handleAttachmentInput}

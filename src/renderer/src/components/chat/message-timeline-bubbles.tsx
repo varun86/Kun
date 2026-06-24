@@ -1444,7 +1444,8 @@ function MessageBubbleImpl({
     return <UserInputBubble block={block} nested={nested} />
   }
   if (block.kind === 'approval') {
-    const done = block.status !== 'pending'
+    const submitting = block.status === 'submitting'
+    const done = block.status !== 'pending' && !submitting
     const statusLabel =
       block.status === 'allowed'
         ? t('approvalAllowed')
@@ -1452,7 +1453,9 @@ function MessageBubbleImpl({
           ? t('approvalDenied')
           : block.status === 'error'
             ? t('approvalFailed')
-            : t('approvalPending')
+            : submitting
+              ? t('approvalSubmitting')
+              : t('approvalPending')
     return (
       <div
         className={`rounded-[22px] border px-4 py-4 text-[13px] leading-6 shadow-[0_12px_30px_rgba(86,103,136,0.04)] ${
@@ -1475,18 +1478,23 @@ function MessageBubbleImpl({
           <div className="mt-3 flex flex-wrap gap-2">
             <button
               type="button"
-              className="rounded-lg bg-emerald-600 px-3 py-1.5 text-[13px] font-medium text-white hover:bg-emerald-700"
+              disabled={submitting}
+              className="rounded-lg bg-emerald-600 px-3 py-1.5 text-[13px] font-medium text-white hover:bg-emerald-700 disabled:cursor-wait disabled:opacity-60"
               onClick={() => void resolveApproval(block.id, 'allow')}
             >
               {t('approvalAllow')}
             </button>
             <button
               type="button"
-              className="rounded-lg border border-ds-border bg-ds-card px-3 py-1.5 text-[13px] font-medium text-ds-ink hover:bg-ds-hover"
+              disabled={submitting}
+              className="rounded-lg border border-ds-border bg-ds-card px-3 py-1.5 text-[13px] font-medium text-ds-ink hover:bg-ds-hover disabled:cursor-wait disabled:opacity-60"
               onClick={() => void resolveApproval(block.id, 'deny')}
             >
               {t('approvalDeny')}
             </button>
+            {submitting ? (
+              <span className="self-center text-[12px] font-medium text-ds-muted">{statusLabel}</span>
+            ) : null}
           </div>
         ) : (
           <p className="mt-2 text-[12px] font-medium text-ds-muted">{statusLabel}</p>

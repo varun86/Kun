@@ -15,11 +15,16 @@ export type RuntimeErrorSeverity = 'info' | 'warning' | 'error'
 
 export type AttachmentReference = {
   id: string
+  kind?: 'image' | 'document'
   name?: string
   mimeType?: string
   byteSize?: number
   width?: number
   height?: number
+  pageCount?: number
+  truncated?: boolean
+  textPreview?: string
+  documentText?: string
   previewUrl?: string
 }
 
@@ -266,7 +271,7 @@ export type ChatBlock =
       approvalId: string
       summary: string
       toolName?: string
-      status: 'pending' | 'allowed' | 'denied' | 'error'
+      status: 'pending' | 'submitting' | 'allowed' | 'denied' | 'error'
       errorMessage?: string
       meta?: RuntimeDisclosureMetadata
     }

@@ -111,6 +111,7 @@ type StoreActionContext = {
 }
 
 let drainingQueuedMessages = false
+const checkpointGitUnavailableWorkspaces = new Set<string>()
 
 function fallbackComposerProviderIdForSend(state: ChatState): string {
   return state.route === 'claw' ? '' : state.composerProviderId.trim()
@@ -826,7 +827,12 @@ export function createThreadActions(
       let workspaceCheckpointId: string | undefined
       const checkpointThread = get().threads.find((thread) => thread.id === activeThreadId)
       const checkpointWorkspaceRoot = normalizeWorkspaceRoot(checkpointThread?.workspace) || normalizeWorkspaceRoot(settings.workspaceRoot)
-      if (checkpointWorkspaceRoot && typeof window.kunGui.createGitCheckpoint === 'function') {
+      const checkpointWorkspaceKey = checkpointWorkspaceRoot.replaceAll('\\', '/').toLowerCase()
+      if (
+        checkpointWorkspaceRoot &&
+        !checkpointGitUnavailableWorkspaces.has(checkpointWorkspaceKey) &&
+        typeof window.kunGui.createGitCheckpoint === 'function'
+      ) {
         const checkpoint = await window.kunGui.createGitCheckpoint({
           workspaceRoot: checkpointWorkspaceRoot,
           threadId: activeThreadId
@@ -838,11 +844,20 @@ export function createThreadActions(
         if (checkpoint.ok) {
           workspaceCheckpointId = checkpoint.checkpointId
         } else if (checkpoint.reason !== 'not_git_repo' && checkpoint.reason !== 'no_workspace') {
-          void window.kunGui.logError('git-checkpoint', 'Failed to create Git checkpoint', {
-            message: checkpoint.message,
-            reason: checkpoint.reason,
-            workspaceRoot: checkpointWorkspaceRoot
-          }).catch(() => undefined)
+          if (checkpoint.reason === 'git_unavailable') {
+            checkpointGitUnavailableWorkspaces.add(checkpointWorkspaceKey)
+          }
+          void window.kunGui.logError(
+            'git-checkpoint',
+            checkpoint.reason === 'git_unavailable'
+              ? 'Git checkpoint disabled for this workspace because Git was not found'
+              : 'Failed to create Git checkpoint',
+            {
+              message: checkpoint.message,
+              reason: checkpoint.reason,
+              workspaceRoot: checkpointWorkspaceRoot
+            }
+          ).catch(() => undefined)
         }
       }
       let runtimeText: string

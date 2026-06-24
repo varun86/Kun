@@ -28,7 +28,7 @@ import {
   buildVideoGenToolProviders
 } from '../adapters/tool/media-gen-tool-provider.js'
 import { LocalWorkspaceInspector } from '../adapters/workspace/local-workspace-inspector.js'
-import { createImmutablePrefix, setSystemPrompt } from '../cache/immutable-prefix.js'
+import { createImmutablePrefix } from '../cache/immutable-prefix.js'
 import {
   buildRuntimeCapabilityManifest,
   type KunCapabilitiesConfig
@@ -211,13 +211,6 @@ export async function createKunServeRuntime(
     SkillRuntime.create(options.capabilities?.skills),
     seedUsageCarryover({ threadStore, sessionStore, usageService })
   ])
-  // Fold the available-skills catalog into the stable prefix once per session so
-  // the model knows which skills exist (and where to read them) even when no
-  // trigger fires. Stays byte-stable across turns, preserving prompt-cache reuse.
-  const skillCatalog = skillRuntime.catalogInstruction()
-  if (skillCatalog) {
-    prefix = setSystemPrompt(prefix, `${KUN_SYSTEM_PROMPT}\n\n${skillCatalog}`)
-  }
   const turnService = new TurnService({
     threadStore,
     sessionStore,

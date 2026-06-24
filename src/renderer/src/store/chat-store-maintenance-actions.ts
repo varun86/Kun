@@ -832,6 +832,13 @@ export function createMaintenanceActions(
       set({ error: i18n.t('common:runtimeFeatureUnsupported') })
       return
     }
+    set((s) => ({
+      blocks: s.blocks.map((b) =>
+        b.id === blockId && b.kind === 'approval' && b.status === 'pending'
+          ? { ...b, status: 'submitting' as const, errorMessage: undefined }
+          : b
+      )
+    }))
     try {
       await p.submitApprovalDecision(
         block.approvalId,

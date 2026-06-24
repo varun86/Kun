@@ -1192,7 +1192,7 @@ export class AgentLoop {
       workspace: thread?.workspace ?? '',
       modelCapabilities
     })
-    const skillResolution = this.opts.skillRuntime?.resolveTurn({
+    const skillResolution = await this.opts.skillRuntime?.resolveTurn({
       prompt: turn?.prompt ?? '',
       workspace: thread?.workspace ?? ''
     }) ?? {
@@ -1340,6 +1340,7 @@ export class AgentLoop {
         tools: effectiveToolSpecs
       }),
       ...memoryInstructions(memories),
+      ...(skillResolution.catalogInstruction ? [skillResolution.catalogInstruction] : []),
       ...skillResolution.instructions,
       ...(userInputDisabled ? [userInputUnavailableInstruction()] : []),
       ...(effectiveToolSpecs.some((tool) => tool.name === 'bash') ? [shellRuntimeInstruction()] : []),
