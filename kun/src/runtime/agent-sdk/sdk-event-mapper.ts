@@ -12,12 +12,13 @@
  * responsible for (a) recording each returned event and (b) mirroring the
  * `item` carried by item-events into the turn-item store.
  *
- * Streaming model: we run `query()` with `includePartialMessages: true`, so
- * text/thinking arrive as incremental `stream_event` deltas and complete
- * `assistant` messages arrive afterwards. Because each kun text-delta event
- * carries the FULL accumulated item text (the GUI replaces rather than
- * appends), re-emitting the final text on the complete message is idempotent —
- * which also makes the no-partials path (deltas absent) work correctly.
+ * Streaming model (mirrors kun's native loop exactly, or the GUI double-renders):
+ * a kun `assistant_text_delta` event carries an INCREMENTAL CHUNK (the GUI
+ * APPENDS each delta's `item.text`), and the authoritative full text is emitted
+ * ONCE at the end as an `item_created` event (the GUI replaces/finalizes by id).
+ * So: `stream_event` deltas → chunk `*_delta` events; the complete `assistant`
+ * message → a single `item_created` with the full text. On the no-partials path
+ * (deltas absent) the `item_created` alone carries the whole message.
  */
 import type { RuntimeEventDraft } from '../../services/runtime-event-recorder.js'
 import type { UsageSnapshot } from '../../contracts/usage.js'
@@ -157,11 +158,11 @@ export class SdkEventMapper {
     const delta = event.delta
     if (delta.type === 'text_delta' && typeof delta.text === 'string' && delta.text.length > 0) {
       this.textAccum += delta.text
-      return [this.assistantTextEvent('running')]
+      return [this.textDeltaEvent(delta.text)]
     }
     if (delta.type === 'thinking_delta' && typeof delta.thinking === 'string' && delta.thinking.length > 0) {
       this.reasoningAccum += delta.thinking
-      return [this.assistantReasoningEvent('running')]
+      return [this.reasoningDeltaEvent(delta.thinking)]
     }
     return []
   }
@@ -182,17 +183,18 @@ export class SdkEventMapper {
         events.push(...this.toolUseEvents(block as SdkToolUseBlock))
       }
     }
-    // Finalize text/thinking with the authoritative full payload from the
-    // complete message (idempotent vs the streamed deltas).
-    if (text) {
-      this.textAccum = text
-      events.unshift(this.assistantTextEvent('completed'))
-    } else if (this.textItemId && this.textAccum) {
-      events.unshift(this.assistantTextEvent('completed'))
-    }
+    // Finalize text/thinking as item_created with the authoritative full payload.
+    // (Native finalizes via applyItem -> item_created, a replace — NOT a delta —
+    // so the streamed chunks above are not re-appended.)
     if (thinking) {
       this.reasoningAccum = thinking
-      events.unshift(this.assistantReasoningEvent('completed'))
+      events.unshift(this.reasoningItemCreated())
+    }
+    if (text) {
+      this.textAccum = text
+      events.unshift(this.textItemCreated())
+    } else if (this.textItemId && this.textAccum) {
+      events.unshift(this.textItemCreated())
     }
     return events
   }
@@ -233,7 +235,8 @@ export class SdkEventMapper {
 
   // --- event builders ------------------------------------------------------
 
-  private assistantTextEvent(status: 'running' | 'completed'): RuntimeEventDraft {
+  /** Incremental text chunk → a running delta (GUI appends item.text). */
+  private textDeltaEvent(chunk: string): RuntimeEventDraft {
     this.textItemId ||= this.ctx.nextId('item_text')
     return {
       kind: 'assistant_text_delta',
@@ -244,13 +247,31 @@ export class SdkEventMapper {
         id: this.textItemId,
         turnId: this.ctx.turnId,
         threadId: this.ctx.threadId,
-        text: this.textAccum,
-        status
+        text: chunk,
+        status: 'running'
       })
     }
   }
 
-  private assistantReasoningEvent(status: 'running' | 'completed'): RuntimeEventDraft {
+  /** Authoritative full text → item_created (GUI replaces/finalizes by id). */
+  private textItemCreated(): RuntimeEventDraft {
+    this.textItemId ||= this.ctx.nextId('item_text')
+    return {
+      kind: 'item_created',
+      threadId: this.ctx.threadId,
+      turnId: this.ctx.turnId,
+      itemId: this.textItemId,
+      item: makeAssistantTextItem({
+        id: this.textItemId,
+        turnId: this.ctx.turnId,
+        threadId: this.ctx.threadId,
+        text: this.textAccum,
+        status: 'completed'
+      })
+    }
+  }
+
+  private reasoningDeltaEvent(chunk: string): RuntimeEventDraft {
     this.reasoningItemId ||= this.ctx.nextId('item_reasoning')
     return {
       kind: 'assistant_reasoning_delta',
@@ -261,8 +282,25 @@ export class SdkEventMapper {
         id: this.reasoningItemId,
         turnId: this.ctx.turnId,
         threadId: this.ctx.threadId,
+        text: chunk,
+        status: 'running'
+      })
+    }
+  }
+
+  private reasoningItemCreated(): RuntimeEventDraft {
+    this.reasoningItemId ||= this.ctx.nextId('item_reasoning')
+    return {
+      kind: 'item_created',
+      threadId: this.ctx.threadId,
+      turnId: this.ctx.turnId,
+      itemId: this.reasoningItemId,
+      item: makeAssistantReasoningItem({
+        id: this.reasoningItemId,
+        turnId: this.ctx.turnId,
+        threadId: this.ctx.threadId,
         text: this.reasoningAccum,
-        status
+        status: 'completed'
       })
     }
   }

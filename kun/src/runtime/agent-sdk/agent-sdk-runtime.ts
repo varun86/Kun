@@ -154,8 +154,16 @@ export class AgentSdkRuntime {
         }
         for (const draft of mapper.map(message)) {
           const item = itemOf(draft)
-          if (item && shouldPersist(item)) await this.deps.applyItem(threadId, item)
-          await this.deps.recordEvent(draft)
+          if (item && shouldPersist(item)) {
+            // applyItem persists the item AND records its own item_created event,
+            // so only ALSO record non-item_created signal events (tool_call_ready,
+            // tool_call_finished) — never the item_created draft itself, or the
+            // item would be published twice.
+            await this.deps.applyItem(threadId, item)
+            if (draft.kind !== 'item_created') await this.deps.recordEvent(draft)
+          } else {
+            await this.deps.recordEvent(draft)
+          }
         }
       }
 

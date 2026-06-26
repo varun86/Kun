@@ -39,10 +39,10 @@ describe('SdkEventMapper', () => {
       turnId: 'tn_1',
       item: { kind: 'assistant_text', text: 'Hel', status: 'running' }
     })
-    // Second delta carries the FULL accumulated text (GUI replaces, not appends)
+    // Second delta carries only the incremental CHUNK (GUI appends per delta)
     expect(second[0]).toMatchObject({
       kind: 'assistant_text_delta',
-      item: { text: 'Hello', status: 'running' }
+      item: { text: 'lo', status: 'running' }
     })
     // Same item id reused across deltas
     expect((first[0] as { itemId: string }).itemId).toBe((second[0] as { itemId: string }).itemId)
@@ -60,19 +60,26 @@ describe('SdkEventMapper', () => {
     })
   })
 
-  test('finalizes text on the complete assistant message (idempotent vs deltas)', () => {
+  test('finalizes text on the complete assistant message as item_created (not a delta)', () => {
     const m = makeMapper()
-    m.map({
+    const deltaEvents = m.map({
       type: 'stream_event',
       event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Hi' } }
     } as SdkMessage)
+    // The streamed delta carries only the chunk.
+    expect(deltaEvents[0]).toMatchObject({ kind: 'assistant_text_delta', item: { text: 'Hi', status: 'running' } })
     const events = m.map({
       type: 'assistant',
       parent_tool_use_id: null,
       message: { role: 'assistant', content: [{ type: 'text', text: 'Hi there' }] }
     } as SdkMessage)
-    const textEvent = events.find((e) => e.kind === 'assistant_text_delta')
-    expect(textEvent).toMatchObject({ item: { text: 'Hi there', status: 'completed' } })
+    // The complete message finalizes as item_created (a replace), NOT a delta —
+    // so the GUI does not re-append the full text on top of the streamed chunks.
+    expect(events.some((e) => e.kind === 'assistant_text_delta')).toBe(false)
+    const finalItem = events.find((e) => e.kind === 'item_created')
+    expect(finalItem).toMatchObject({
+      item: { kind: 'assistant_text', text: 'Hi there', status: 'completed' }
+    })
   })
 
   test('maps a tool_use block to item_created + tool_call_ready', () => {
