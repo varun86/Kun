@@ -104,6 +104,7 @@ import { useUiModeCameosEnabled, useUiPluginStore } from '../store/ui-plugin-sto
 import { readFocusModePreference, writeFocusModePreference } from '../lib/focus-mode'
 import {
   buildComposerFileContextPrompt,
+  composerFileReferenceFromPath,
   isComposerDirectoryReference,
   mergeComposerFileReferences,
   relativeWorkspacePath,
@@ -1077,6 +1078,14 @@ export function Workbench(): ReactElement {
     setComposerFileReferences((current) => mergeComposerFileReferences(current, reference))
   }
 
+  const pickComposerFileReferences = async (): Promise<void> => {
+    const result = await window.kunGui.pickLocalFiles(activeSkillWorkspace || undefined)
+    if (result.canceled) return
+    for (const path of result.paths) {
+      addComposerFileReference(composerFileReferenceFromPath(path, activeSkillWorkspace))
+    }
+  }
+
   const removeComposerFileReference = (relativePath: string): void => {
     const key = relativePath.trim().replaceAll('\\', '/').replace(/\/+/g, '/').toLowerCase()
     setComposerFileReferences((current) =>
@@ -1952,8 +1961,12 @@ export function Workbench(): ReactElement {
       const key = contextKey(reference.relativePath || reference.path)
       if (seen.has(key)) return
       const result = await window.kunGui.readWorkspaceFile({
-        workspaceRoot: workspace,
-        path: reference.relativePath || reference.path
+        ...(reference.workspaceRoot === null
+          ? {}
+          : { workspaceRoot: reference.workspaceRoot || workspace }),
+        path: reference.workspaceRoot === null
+          ? reference.path
+          : (reference.relativePath || reference.path)
       })
       if (!result.ok) {
         if (!strict) return
@@ -2802,6 +2815,7 @@ export function Workbench(): ReactElement {
                 onPasteClipboardImage={(options) => void handlePasteClipboardImage(options)}
                 onRemoveAttachment={removeComposerAttachment}
                 onAddFileReference={addComposerFileReference}
+                onPickFileReferences={() => void pickComposerFileReferences()}
                 onOpenFileReferencePicker={openFileTreeSidePanel}
                 onRemoveFileReference={removeComposerFileReference}
                 queuedMessages={queuedMessages}
