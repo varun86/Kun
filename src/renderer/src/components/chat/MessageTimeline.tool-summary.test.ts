@@ -279,7 +279,7 @@ describe('MessageTimeline Kun runtime metadata smoke', () => {
     expect(html).not.toContain('Feishu / Lark inbound message')
   })
 
-  it('renders attachment, Skill, memory, web source, and child-agent chips in bubbles', () => {
+  it('renders tool-specific metadata chips in tool bubbles', () => {
     const block: ToolBlock = toolBlock({
       summary: 'web_search: docs',
       meta: {
@@ -301,9 +301,9 @@ describe('MessageTimeline Kun runtime metadata smoke', () => {
 
     const html = renderToStaticMarkup(createElement(MessageBubble, { block }))
 
-    expect(html).toContain('Attachments 1')
-    expect(html).toContain('Skills 1')
-    expect(html).toContain('Memories 1')
+    expect(html).not.toContain('Attachments 1')
+    expect(html).not.toContain('Skills 1')
+    expect(html).not.toContain('Memories 1')
     expect(html).toContain('Child agent')
     expect(html).toContain('research')
     expect(html).toContain('Sources 1')

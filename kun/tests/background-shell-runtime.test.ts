@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
+import type { ThreadStore } from '../src/ports/thread-store.js'
+import type { RuntimeEventRecorder } from '../src/services/runtime-event-recorder.js'
 import { BackgroundShellRuntime } from '../src/services/background-shell-runtime.js'
+import type { TurnService } from '../src/services/turn-service.js'
 
 describe('BackgroundShellRuntime', () => {
   it('steers a running turn when a detached shell completes successfully', async () => {
@@ -7,15 +10,15 @@ describe('BackgroundShellRuntime', () => {
     const startTurn = vi.fn(async () => ({ threadId: 'thr_1', turnId: 'turn_new', userMessageItemId: 'item_1' }))
     const runTurn = vi.fn(async () => undefined)
     const runtime = new BackgroundShellRuntime({
-      events: { record: vi.fn(async () => undefined) },
+      events: { record: vi.fn(async () => undefined) } as unknown as RuntimeEventRecorder,
       threadStore: {
         get: vi.fn(async () => ({
           id: 'thr_1',
           status: 'running',
           turns: [{ id: 'turn_1', status: 'running' }]
         }))
-      },
-      turns: { steerTurn, startTurn },
+      } as unknown as ThreadStore,
+      turns: { steerTurn, startTurn } as unknown as TurnService,
       nowIso: () => '2026-01-01T00:00:00.000Z'
     })
     runtime.bindAgentLoop({ runTurn })
@@ -49,15 +52,15 @@ describe('BackgroundShellRuntime', () => {
     const startTurn = vi.fn(async () => ({ threadId: 'thr_1', turnId: 'turn_new', userMessageItemId: 'item_1' }))
     const runTurn = vi.fn(async () => undefined)
     const runtime = new BackgroundShellRuntime({
-      events: { record: vi.fn(async () => undefined) },
+      events: { record: vi.fn(async () => undefined) } as unknown as RuntimeEventRecorder,
       threadStore: {
         get: vi.fn(async () => ({
           id: 'thr_1',
           status: 'idle',
           turns: [{ id: 'turn_1', status: 'completed' }]
         }))
-      },
-      turns: { steerTurn, startTurn },
+      } as unknown as ThreadStore,
+      turns: { steerTurn, startTurn } as unknown as TurnService,
       nowIso: () => '2026-01-01T00:00:00.000Z'
     })
     runtime.bindAgentLoop({ runTurn })
