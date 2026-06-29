@@ -8,6 +8,7 @@ import type { UsageSnapshot } from '../contracts/usage.js'
 const ReplayExpectationSchema = z.object({
   minAssistantChars: z.number().int().nonnegative().default(1),
   requiredTools: z.array(z.string().min(1)).default([]),
+  requiredAnyTools: z.array(z.string().min(1)).default([]),
   maxErrorEvents: z.number().int().nonnegative().default(0),
   maxTotalMs: z.number().int().positive().optional()
 }).strict()
@@ -160,6 +161,7 @@ type ReplayHttpClient = {
   createThread(body: Record<string, unknown>): Promise<{ id: string }>
   startTurn(threadId: string, body: Record<string, unknown>): Promise<{ turnId: string }>
   openEvents(threadId: string, signal: AbortSignal): Promise<Response>
+  interruptTurn(threadId: string, turnId: string): Promise<void>
   deleteThread(threadId: string): Promise<void>
 }
 
@@ -242,6 +244,8 @@ async function runReplayTask(input: {
   if (!model) return errorReplayRun(runId, task, iteration, 'runtime did not report a default model')
   const workspace = resolve(input.workspace, task.workspace ?? '.')
   let threadId: string | undefined
+  let turnId: string | undefined
+  let shouldInterrupt = false
   try {
     const thread = await client.createThread({
       title: `[replay] ${runId}`,
@@ -264,14 +268,16 @@ async function runReplayTask(input: {
       sandboxMode: 'read-only',
       disableUserInput: true
     })
+    turnId = turn.turnId
     const timeoutMs = task.timeoutMs ?? suite.defaults.timeoutMs
     const collected = await collectReplayEvents({
       client,
       threadId,
-      turnId: turn.turnId,
+      turnId,
       startedAt,
       timeoutMs
     })
+    shouldInterrupt = collected.timedOut || !hasTerminalTurnEvent(collected.events, turnId)
     const after = await client.getRuntimeInfo().catch(() => runtime)
     const metrics = summarizeReplayEvents(
       collected.events,
@@ -285,17 +291,22 @@ async function runReplayTask(input: {
       iteration,
       tags: task.tags,
       threadId,
-      turnId: turn.turnId,
+      turnId,
       status: collected.timedOut ? 'timeout' : failureReasons.length > 0 ? 'failed' : 'passed',
       failureReasons,
       metrics
     }
   } catch (error) {
+    shouldInterrupt = turnId !== undefined
     return {
       ...errorReplayRun(runId, task, iteration, errorMessage(error)),
-      ...(threadId ? { threadId } : {})
+      ...(threadId ? { threadId } : {}),
+      ...(turnId ? { turnId } : {})
     }
   } finally {
+    if (threadId && turnId && shouldInterrupt) {
+      await client.interruptTurn(threadId, turnId).catch(() => undefined)
+    }
     if (threadId && !input.keepThread) {
       await client.deleteThread(threadId).catch(() => undefined)
     }
@@ -566,6 +577,11 @@ function createReplayHttpClient(
       }
       return response
     },
+    async interruptTurn(threadId, turnId) {
+      await requestJson(`/v1/threads/${encodeURIComponent(threadId)}/turns/${encodeURIComponent(turnId)}/interrupt`, {
+        method: 'POST'
+      })
+    },
     async deleteThread(threadId) {
       await requestJson(`/v1/threads/${encodeURIComponent(threadId)}`, { method: 'DELETE' })
     }
@@ -635,6 +651,9 @@ function replayExpectationFailures(
   for (const tool of task.expect.requiredTools) {
     if (!usedTools.has(tool)) failures.push(`required tool was not used: ${tool}`)
   }
+  if (task.expect.requiredAnyTools.length > 0 && !task.expect.requiredAnyTools.some((tool) => usedTools.has(tool))) {
+    failures.push(`none of the required tools were used: ${task.expect.requiredAnyTools.join(', ')}`)
+  }
   return failures
 }
 
@@ -678,6 +697,10 @@ function emptyReplayMetrics(): ReplayRunMetrics {
 
 function isTerminalTurnEvent(kind: RuntimeEventValue['kind']): boolean {
   return kind === 'turn_completed' || kind === 'turn_failed' || kind === 'turn_aborted'
+}
+
+function hasTerminalTurnEvent(events: ObservedReplayEvent[], turnId: string): boolean {
+  return events.some(({ event }) => event.turnId === turnId && isTerminalTurnEvent(event.kind))
 }
 
 function percentile(values: number[], quantile: number): number | null {

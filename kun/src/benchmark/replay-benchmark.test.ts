@@ -3,6 +3,7 @@ import type { RuntimeEvent } from '../contracts/events.js'
 import {
   compareReplayReports,
   ReplaySuiteSchema,
+  runReplaySuite,
   SseMessageDecoder,
   summarizeReplayEvents,
   summarizeReplayRuns,
@@ -10,6 +11,7 @@ import {
   type ReplayReport,
   type ReplayRunResult
 } from './replay-benchmark.js'
+import { buildRuntimeCapabilityManifest } from '../contracts/capabilities.js'
 
 const baseTimestamp = Date.parse('2026-06-29T00:00:00.000Z')
 
@@ -178,7 +180,174 @@ describe('replay benchmark', () => {
       ]
     })).toThrow('duplicate replay task id')
   })
+
+  it('fails runs that do not use any required investigation tool', async () => {
+    const fetchImpl: typeof fetch = async (input, init = {}) => {
+      const url = new URL(String(input))
+      if (url.pathname === '/v1/runtime/info') return jsonResponse(testRuntimeInfo())
+      if (url.pathname === '/v1/threads' && init.method === 'POST') return jsonResponse({ id: 'thr_1' }, 201)
+      if (url.pathname === '/v1/threads/thr_1/turns' && init.method === 'POST') {
+        return jsonResponse({ threadId: 'thr_1', turnId: 'turn_1', userMessageItemId: 'item_user' }, 202)
+      }
+      if (url.pathname === '/v1/threads/thr_1/events') {
+        return sseResponse([
+          {
+            kind: 'assistant_text_delta',
+            seq: 1,
+            timestamp: '2026-06-29T00:00:00.000Z',
+            threadId: 'thr_1',
+            turnId: 'turn_1',
+            item: { ...itemBase('assistant_text'), id: 'item_text', threadId: 'thr_1', turnId: 'turn_1', text: 'hello' }
+          } as RuntimeEvent,
+          {
+            kind: 'turn_completed',
+            seq: 2,
+            timestamp: '2026-06-29T00:00:00.010Z',
+            threadId: 'thr_1',
+            turnId: 'turn_1',
+            status: 'completed'
+          }
+        ])
+      }
+      if (url.pathname === '/v1/threads/thr_1' && init.method === 'DELETE') {
+        return jsonResponse({ id: 'thr_1', deleted: true })
+      }
+      return jsonResponse({ message: `unexpected ${init.method ?? 'GET'} ${url.pathname}` }, 404)
+    }
+
+    const report = await runReplaySuite({
+      version: 1,
+      name: 'tool-required-suite',
+      tasks: [{
+        id: 'no-tool',
+        prompt: 'answer from memory',
+        expect: { requiredAnyTools: ['read', 'grep', 'find', 'ls'] }
+      }]
+    }, {
+      baseUrl: 'http://127.0.0.1:18899',
+      token: 'token',
+      workspace: '/tmp/workspace',
+      fetchImpl
+    })
+
+    expect(report.runs[0]?.status).toBe('failed')
+    expect(report.runs[0]?.failureReasons).toContain('none of the required tools were used: read, grep, find, ls')
+  })
+
+  it('interrupts timed-out turns before deleting replay threads', async () => {
+    const calls: Array<{ method: string; path: string }> = []
+    const fetchImpl: typeof fetch = async (input, init = {}) => {
+      const url = new URL(String(input))
+      calls.push({ method: init.method ?? 'GET', path: `${url.pathname}${url.search}` })
+      if (url.pathname === '/v1/runtime/info') return jsonResponse(testRuntimeInfo())
+      if (url.pathname === '/v1/threads' && init.method === 'POST') return jsonResponse({ id: 'thr_1' }, 201)
+      if (url.pathname === '/v1/threads/thr_1/turns' && init.method === 'POST') {
+        return jsonResponse({ threadId: 'thr_1', turnId: 'turn_1', userMessageItemId: 'item_user' }, 202)
+      }
+      if (url.pathname === '/v1/threads/thr_1/events') return neverTerminalSse(init.signal)
+      if (url.pathname === '/v1/threads/thr_1/turns/turn_1/interrupt' && init.method === 'POST') {
+        return jsonResponse({ threadId: 'thr_1', turnId: 'turn_1', status: 'aborted' })
+      }
+      if (url.pathname === '/v1/threads/thr_1' && init.method === 'DELETE') {
+        return jsonResponse({ id: 'thr_1', deleted: true })
+      }
+      return jsonResponse({ message: `unexpected ${init.method ?? 'GET'} ${url.pathname}` }, 404)
+    }
+
+    const report = await runReplaySuite({
+      version: 1,
+      name: 'timeout-suite',
+      defaults: { timeoutMs: 20 },
+      tasks: [{ id: 'slow', prompt: 'wait for a terminal event', expect: { minAssistantChars: 0 } }]
+    }, {
+      baseUrl: 'http://127.0.0.1:18899',
+      token: 'token',
+      workspace: '/tmp/workspace',
+      fetchImpl
+    })
+
+    expect(report.runs[0]?.status).toBe('timeout')
+    const interruptIndex = calls.findIndex((call) => call.path === '/v1/threads/thr_1/turns/turn_1/interrupt')
+    const deleteIndex = calls.findIndex((call) => call.path === '/v1/threads/thr_1')
+    expect(interruptIndex).toBeGreaterThan(-1)
+    expect(deleteIndex).toBeGreaterThan(interruptIndex)
+  })
 })
+
+function jsonResponse(value: unknown, status = 200): Response {
+  return new Response(JSON.stringify(value), {
+    status,
+    headers: { 'content-type': 'application/json' }
+  })
+}
+
+function testRuntimeInfo() {
+  return {
+    host: '127.0.0.1',
+    port: 18899,
+    dataDir: '/tmp/kun-replay',
+    model: 'deepseek-chat',
+    startedAt: '2026-06-29T00:00:00.000Z',
+    capabilities: buildRuntimeCapabilityManifest({
+      model: {
+        id: 'deepseek-chat',
+        inputModalities: ['text'],
+        outputModalities: ['text'],
+        supportsToolCalling: true,
+        messageParts: ['text']
+      }
+    })
+  }
+}
+
+function sseResponse(events: RuntimeEvent[]): Response {
+  const encoder = new TextEncoder()
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const event of events) {
+        controller.enqueue(
+          encoder.encode(`id: ${event.seq}\nevent: ${event.kind}\ndata: ${JSON.stringify(event)}\n\n`)
+        )
+      }
+      controller.close()
+    }
+  })
+  return new Response(stream, {
+    status: 200,
+    headers: { 'content-type': 'text/event-stream; charset=utf-8' }
+  })
+}
+
+function neverTerminalSse(signal?: AbortSignal | null): Response {
+  const encoder = new TextEncoder()
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const heartbeat = [
+        'id: 1',
+        'event: heartbeat',
+        `data: ${JSON.stringify({
+          kind: 'heartbeat',
+          seq: 1,
+          timestamp: '2026-06-29T00:00:00.000Z',
+          threadId: 'thr_1'
+        })}`,
+        '',
+        ''
+      ].join('\n')
+      const push = () => controller.enqueue(encoder.encode(heartbeat))
+      const timer = setInterval(push, 1)
+      push()
+      signal?.addEventListener('abort', () => {
+        clearInterval(timer)
+        controller.error(new DOMException('aborted', 'AbortError'))
+      }, { once: true })
+    }
+  })
+  return new Response(stream, {
+    status: 200,
+    headers: { 'content-type': 'text/event-stream; charset=utf-8' }
+  })
+}
 
 function replayRun(
   status: ReplayRunResult['status'],

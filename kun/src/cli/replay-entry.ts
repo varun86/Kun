@@ -6,6 +6,9 @@ import {
   runReplaySuite,
   type ReplayReport
 } from '../benchmark/replay-benchmark.js'
+import { DEFAULT_SERVE_PORT } from './cli-options.js'
+
+const DEFAULT_RUNTIME_URL = `http://127.0.0.1:${DEFAULT_SERVE_PORT}`
 
 type CliOptions = {
   suitePath?: string
@@ -71,7 +74,7 @@ if (options.failOnRegression && report.comparison?.regressions.length) {
 
 function parseArgs(args: string[]): CliOptions {
   const options: CliOptions = {
-    baseUrl: process.env.KUN_RUNTIME_URL ?? 'http://127.0.0.1:18788',
+    baseUrl: process.env.KUN_RUNTIME_URL ?? DEFAULT_RUNTIME_URL,
     workspace: resolve(process.env.INIT_CWD ?? process.cwd()),
     repeat: 1,
     concurrency: 1,
@@ -140,7 +143,7 @@ function printUsage(): void {
   console.log('  npm --prefix kun run benchmark:replay -- --suite <file> [options]')
   console.log('')
   console.log('Options:')
-  console.log('  --base-url <url>          Kun runtime URL (or KUN_RUNTIME_URL)')
+  console.log(`  --base-url <url>          Kun runtime URL (or KUN_RUNTIME_URL, default ${DEFAULT_RUNTIME_URL})`)
   console.log('  --workspace <path>        Workspace for replay tasks')
   console.log('  --tag <tag>               Run only tasks with this tag')
   console.log('  --repeat <n>              Repeat each selected task (default 1)')
