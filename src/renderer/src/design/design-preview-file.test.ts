@@ -61,6 +61,15 @@ describe('design preview file helpers', () => {
     expect(payload.content).toContain('.kun-design/new/v1.html')
   })
 
+  it('keeps the skeleton preview compact and non-scrollable inside small canvas frames', () => {
+    const skeleton = buildDesignPreviewSkeleton('.kun-design/new/v1.html')
+
+    expect(skeleton).toContain('overflow: hidden')
+    expect(skeleton).toContain('height: 100%')
+    expect(skeleton).toContain('@media (max-height: 230px)')
+    expect(skeleton).not.toContain('min-height: 100vh')
+  })
+
   it('copies the previous HTML version into an iteration preview file', async () => {
     const readWorkspaceFile = vi.fn(async () => ({
       ok: true as const,
@@ -112,7 +121,8 @@ describe('design preview file helpers', () => {
       path: '.kun-design/screen/v1.html',
       onRevision,
       onSkeletonChange,
-      onError: vi.fn()
+      onError: vi.fn(),
+      revisionDebounceMs: 0
     })
     await flushPromises()
 
@@ -147,5 +157,67 @@ describe('design preview file helpers', () => {
     dispose()
     expect(off).toHaveBeenCalled()
     expect(api.unwatchWorkspaceFile).toHaveBeenCalledWith('watch-1')
+  })
+
+  it('coalesces rapid streaming writes into a single debounced revision bump', async () => {
+    vi.useFakeTimers()
+    try {
+      const { api, emit, off } = createWatchApi({
+        ok: true,
+        watchId: 'watch-1',
+        path: '/workspace/.kun-design/screen/v1.html',
+        content: buildDesignPreviewSkeleton('.kun-design/screen/v1.html'),
+        size: buildDesignPreviewSkeleton('.kun-design/screen/v1.html').length,
+        truncated: false,
+        startedAt: '2026-06-21T00:00:00.000Z'
+      })
+      const onRevision = vi.fn()
+      const onSkeletonChange = vi.fn()
+      const dispose = startDesignHtmlPreviewWatch({
+        api,
+        workspaceRoot: '/workspace',
+        path: '.kun-design/screen/v1.html',
+        onRevision,
+        onSkeletonChange,
+        onError: vi.fn(),
+        revisionDebounceMs: 200
+      })
+      await vi.runOnlyPendingTimersAsync()
+
+      // Initial watch establishment bumps once immediately for the first paint.
+      expect(onRevision).toHaveBeenCalledTimes(1)
+      expect(onRevision).toHaveBeenNthCalledWith(1, 1)
+
+      const emitWrite = (chunk: string): void =>
+        emit({
+          ok: true,
+          watchId: 'watch-1',
+          workspaceRoot: '/workspace',
+          path: '/workspace/.kun-design/screen/v1.html',
+          content: `<html><body>${chunk}</body></html>`,
+          size: chunk.length,
+          truncated: false,
+          changedAt: '2026-06-21T00:00:01.000Z'
+        })
+
+      emitWrite('a')
+      emitWrite('ab')
+      emitWrite('abc')
+
+      // Skeleton state is reported immediately for every write so the webview can
+      // mount as soon as real HTML lands, even before the revision bump fires.
+      expect(onSkeletonChange).toHaveBeenLastCalledWith(false)
+      // No extra revision bump until the debounce window elapses.
+      expect(onRevision).toHaveBeenCalledTimes(1)
+
+      vi.advanceTimersByTime(200)
+      expect(onRevision).toHaveBeenCalledTimes(2)
+      expect(onRevision).toHaveBeenNthCalledWith(2, 2)
+
+      dispose()
+      expect(off).toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

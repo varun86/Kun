@@ -35,19 +35,11 @@ function PrototypeFlowOverlayInner({ artifacts, objects, zoom }: Props) {
         </marker>
       </defs>
       {edges.map((edge) => {
-        const dx = edge.x2 - edge.x1
-        const dy = edge.y2 - edge.y1
-        const distance = Math.hypot(dx, dy)
-        const bend = Math.min(120, Math.max(36, distance * 0.18))
-        const normalX = distance ? (-dy / distance) * bend : 0
-        const normalY = distance ? (dx / distance) * bend : -bend
-        const cx = (edge.x1 + edge.x2) / 2 + normalX
-        const cy = (edge.y1 + edge.y2) / 2 + normalY
         const label = edge.label || edge.targetTitle
         return (
           <g key={edge.id}>
             <path
-              d={`M ${edge.x1} ${edge.y1} Q ${cx} ${cy} ${edge.x2} ${edge.y2}`}
+              d={`M ${edge.x1} ${edge.y1} Q ${edge.controlX} ${edge.controlY} ${edge.x2} ${edge.y2}`}
               fill="none"
               stroke={FLOW_COLOR}
               strokeWidth={strokeWidth}
@@ -57,8 +49,8 @@ function PrototypeFlowOverlayInner({ artifacts, objects, zoom }: Props) {
               markerEnd="url(#prototype-flow-arrow)"
             />
             <text
-              x={cx}
-              y={cy - labelOffset}
+              x={edge.controlX}
+              y={edge.controlY - labelOffset}
               textAnchor="middle"
               fontSize={fontSize}
               fontFamily="Inter, system-ui, sans-serif"

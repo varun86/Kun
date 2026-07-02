@@ -1,16 +1,320 @@
 import { describe, expect, it } from 'vitest'
-import { shouldRenderHtmlFrameWebview } from './HtmlFrameOverlay'
+import {
+  HTML_FRAME_CONTENT_SIZE_QUERY,
+  buildHtmlFrameScrollbarSuppressionScript,
+  executeHtmlFrameWebviewScript,
+  htmlFrameDrawingActive,
+  htmlFrameOverlayPointerEvents,
+  htmlFrameShouldSuppressDocumentScrollbars,
+  htmlFrameVisualCanvasHeight,
+  resolveHtmlFrameMeasurementDecision,
+  shouldAutoResizeHtmlFrame,
+  shouldRenderHtmlFrameWebview
+} from './HtmlFrameOverlay'
+import { inferDesignArtifactFoundationRole } from '../../../design/design-types'
+
+class FakeHTMLElement {
+  tagName: string
+  childNodes: unknown[]
+  style: Record<string, string | number>
+  rect: { width: number; height: number; bottom: number }
+  scrollWidth = 420
+  offsetWidth = 420
+  clientWidth = 420
+  scrollHeight = 844
+  offsetHeight = 844
+  clientHeight = 844
+  private descendants: FakeHTMLElement[]
+
+  constructor(
+    tagName: string,
+    rect: { width: number; height: number; bottom: number },
+    options: {
+      childNodes?: unknown[]
+      style?: Record<string, string | number>
+      descendants?: FakeHTMLElement[]
+    } = {}
+  ) {
+    this.tagName = tagName.toUpperCase()
+    this.rect = rect
+    this.childNodes = options.childNodes ?? []
+    this.style = options.style ?? {}
+    this.descendants = options.descendants ?? []
+  }
+
+  getBoundingClientRect(): { width: number; height: number; bottom: number } {
+    return this.rect
+  }
+
+  querySelectorAll(): FakeHTMLElement[] {
+    return this.descendants
+  }
+}
+
+class FakeSVGElement extends FakeHTMLElement {}
+
+type FakeTextNode = {
+  nodeType: number
+  textContent: string
+  rects: Array<{ width: number; height: number; bottom: number }>
+}
+
+function runContentSizeQuery(body: FakeHTMLElement): {
+  width: number
+  height: number
+  documentHeight: number
+  paintedHeight: number
+} {
+  const html = new FakeHTMLElement('html', { width: 420, height: 844, bottom: 844 })
+  const fakeDocument = {
+    documentElement: html,
+    body,
+    createRange: () => {
+      let selected: FakeTextNode | null = null
+      return {
+        selectNodeContents: (node: FakeTextNode) => {
+          selected = node
+        },
+        getClientRects: () => selected?.rects ?? [],
+        detach: () => undefined
+      }
+    }
+  }
+  const fakeWindow = {
+    scrollY: 0,
+    innerWidth: 420,
+    innerHeight: 844,
+    getComputedStyle: (el: FakeHTMLElement) => ({
+      display: 'block',
+      visibility: 'visible',
+      opacity: '1',
+      paddingBottom: '0',
+      borderBottomWidth: '0',
+      backgroundColor: 'transparent',
+      backgroundImage: 'none',
+      ...el.style
+    })
+  }
+  const fakeNode = { TEXT_NODE: 3 }
+  const execute = new Function(
+    'document',
+    'window',
+    'Node',
+    'HTMLElement',
+    'SVGElement',
+    `return ${HTML_FRAME_CONTENT_SIZE_QUERY}`
+  )
+  return execute(fakeDocument, fakeWindow, fakeNode, FakeHTMLElement, FakeSVGElement) as {
+    width: number
+    height: number
+    documentHeight: number
+    paintedHeight: number
+  }
+}
 
 describe('HtmlFrameOverlay preview gating', () => {
-  it('keeps the webview unmounted while the preview file is only the skeleton', () => {
-    expect(shouldRenderHtmlFrameWebview('file:///workspace/.kun-design/screen/v1.html', true)).toBe(false)
-  })
-
-  it('mounts the webview once a real preview URL is ready', () => {
-    expect(shouldRenderHtmlFrameWebview('file:///workspace/.kun-design/screen/v1.html', false)).toBe(true)
+  it('mounts the webview as soon as an authorized file URL exists (even on the skeleton)', () => {
+    expect(shouldRenderHtmlFrameWebview('file:///workspace/.kun-design/screen/v1.html')).toBe(true)
   })
 
   it('does not mount a webview without an authorized file URL', () => {
-    expect(shouldRenderHtmlFrameWebview('', false)).toBe(false)
+    expect(shouldRenderHtmlFrameWebview('')).toBe(false)
+  })
+})
+
+describe('HtmlFrameOverlay pointer event policy', () => {
+  it('lets the canvas receive drag events in normal selected-preview mode', () => {
+    expect(htmlFrameOverlayPointerEvents({ panning: false, interactive: false, editing: false })).toBe('none')
+  })
+
+  it('captures events only for explicit interactive or edit modes', () => {
+    expect(htmlFrameOverlayPointerEvents({ panning: false, interactive: true, editing: false })).toBe('auto')
+    expect(htmlFrameOverlayPointerEvents({ panning: false, interactive: false, editing: true })).toBe('auto')
+  })
+
+  it('keeps hand-tool panning pass-through even when a frame mode is active', () => {
+    expect(htmlFrameOverlayPointerEvents({ panning: true, interactive: true, editing: true })).toBe('none')
+  })
+})
+
+describe('HtmlFrameOverlay visual crop policy', () => {
+  it('keeps the full frame visible before measurement', () => {
+    expect(htmlFrameVisualCanvasHeight(844, null)).toBe(844)
+  })
+
+  it('crops frames to measured content even while the preview is generating', () => {
+    expect(htmlFrameVisualCanvasHeight(844, 260)).toBe(260)
+    expect(htmlFrameVisualCanvasHeight(844, 240)).toBe(240)
+    expect(htmlFrameVisualCanvasHeight(844, 80)).toBe(180)
+    expect(htmlFrameVisualCanvasHeight(844, 1200)).toBe(844)
+  })
+})
+
+describe('HtmlFrameOverlay content measurement query', () => {
+  it('measures painted text instead of preserving a full-height blank container', () => {
+    const titleText: FakeTextNode = {
+      nodeType: 3,
+      textContent: '品牌色彩 / Brand Colors',
+      rects: [{ width: 260, height: 28, bottom: 128 }]
+    }
+    const title = new FakeHTMLElement('h1', { width: 320, height: 34, bottom: 132 }, {
+      childNodes: [titleText]
+    })
+    const blankFullHeightSection = new FakeHTMLElement('section', { width: 420, height: 844, bottom: 844 }, {
+      style: { backgroundColor: '#ffffff' }
+    })
+    const body = new FakeHTMLElement('body', { width: 420, height: 844, bottom: 844 }, {
+      descendants: [title, blankFullHeightSection]
+    })
+
+    const measured = runContentSizeQuery(body)
+
+    expect(measured.width).toBe(420)
+    expect(measured.documentHeight).toBe(844)
+    expect(measured.height).toBeLessThan(180)
+    expect(htmlFrameShouldSuppressDocumentScrollbars({
+      measuredHeight: measured.height,
+      documentHeight: measured.documentHeight
+    })).toBe(true)
+  })
+
+  it('keeps meaningful large background images in the measured height', () => {
+    const hero = new FakeHTMLElement('section', { width: 420, height: 640, bottom: 640 }, {
+      style: {
+        backgroundColor: '#ffffff',
+        backgroundImage: 'url(hero.jpg)'
+      }
+    })
+    const body = new FakeHTMLElement('body', { width: 420, height: 844, bottom: 844 }, {
+      descendants: [hero]
+    })
+
+    const measured = runContentSizeQuery(body)
+
+    expect(measured.height).toBe(656)
+    expect(htmlFrameShouldSuppressDocumentScrollbars({
+      measuredHeight: measured.height,
+      documentHeight: measured.documentHeight
+    })).toBe(true)
+  })
+})
+
+describe('HtmlFrameOverlay internal scrollbar suppression', () => {
+  it('only suppresses scrollbars when the document has a blank tail beyond painted content', () => {
+    expect(htmlFrameShouldSuppressDocumentScrollbars({
+      measuredHeight: 180,
+      documentHeight: 844
+    })).toBe(true)
+    expect(htmlFrameShouldSuppressDocumentScrollbars({
+      measuredHeight: 844,
+      documentHeight: 850
+    })).toBe(false)
+  })
+
+  it('builds a reversible webview scrollbar style injection', () => {
+    expect(buildHtmlFrameScrollbarSuppressionScript(true)).toContain('overflow: hidden')
+    expect(buildHtmlFrameScrollbarSuppressionScript(false)).toContain('existing.remove()')
+  })
+})
+
+describe('HtmlFrameOverlay webview script execution', () => {
+  it('absorbs Electron sync throws before dom-ready', () => {
+    expect(
+      executeHtmlFrameWebviewScript({
+        executeJavaScript: () => {
+          throw new Error('The WebView must be attached to the DOM and the dom-ready event emitted')
+        }
+      }, 'true')
+    ).toBeNull()
+  })
+
+  it('returns the guest promise once the webview accepts scripts', async () => {
+    await expect(
+      executeHtmlFrameWebviewScript({
+        executeJavaScript: async () => 42
+      }, 'true')
+    ).resolves.toBe(42)
+  })
+})
+
+describe('HtmlFrameOverlay measurement decision', () => {
+  it('turns a tall blank document tail into an auto-cropped frame and scrollbar suppression', () => {
+    expect(resolveHtmlFrameMeasurementDecision({
+      height: 141,
+      documentHeight: 844
+    })).toEqual({
+      nextHeight: 180,
+      documentHeight: 844,
+      suppressScrollbars: true
+    })
+  })
+
+  it('does not suppress scrollbars when measured content and document height match', () => {
+    expect(resolveHtmlFrameMeasurementDecision({
+      height: 844,
+      documentHeight: 850
+    })).toEqual({
+      nextHeight: 844,
+      documentHeight: 850,
+      suppressScrollbars: false
+    })
+  })
+
+  it('ignores invalid webview measurements', () => {
+    expect(resolveHtmlFrameMeasurementDecision(null)).toBeNull()
+    expect(resolveHtmlFrameMeasurementDecision({ height: Number.NaN })).toBeNull()
+  })
+})
+
+describe('HtmlFrameOverlay auto resize policy', () => {
+  it('keeps normal manual frames fixed but migrates foundation frames back to auto sizing', () => {
+    expect(shouldAutoResizeHtmlFrame({ sizeMode: 'manual', previewStatus: 'ready' })).toBe(false)
+    expect(shouldAutoResizeHtmlFrame({
+      sizeMode: 'manual',
+      role: 'design-system',
+      previewStatus: 'ready'
+    })).toBe(true)
+    expect(shouldAutoResizeHtmlFrame({
+      sizeMode: 'manual',
+      role: 'logo',
+      previewStatus: 'ready'
+    })).toBe(true)
+    expect(shouldAutoResizeHtmlFrame({
+      sizeMode: 'manual',
+      role: inferDesignArtifactFoundationRole({ title: '设计系统' }),
+      previewStatus: 'ready'
+    })).toBe(true)
+  })
+
+  it('keeps pending and running frames auto-sized while generation is active', () => {
+    expect(shouldAutoResizeHtmlFrame({ sizeMode: 'manual', previewStatus: 'pending' })).toBe(true)
+    expect(shouldAutoResizeHtmlFrame({ sizeMode: 'manual', parallelStatus: 'running' })).toBe(true)
+  })
+})
+
+describe('HtmlFrameOverlay drawing state', () => {
+  it('does not keep a finished design-system frame in drawing mode while the logo step runs', () => {
+    expect(htmlFrameDrawingActive({
+      foundationRole: 'design-system',
+      previewStatus: 'pending',
+      pagesRunPhase: 'foundation',
+      pagesRunStep: 'logo',
+      chatBusy: true
+    })).toBe(false)
+  })
+
+  it('keeps only the matching foundation artifact in drawing mode', () => {
+    expect(htmlFrameDrawingActive({
+      foundationRole: 'logo',
+      previewStatus: 'pending',
+      pagesRunPhase: 'foundation',
+      pagesRunStep: 'logo',
+      chatBusy: true
+    })).toBe(true)
+  })
+
+  it('keeps normal pending screens drawing only while their turn is busy', () => {
+    expect(htmlFrameDrawingActive({ previewStatus: 'pending', chatBusy: true })).toBe(true)
+    expect(htmlFrameDrawingActive({ previewStatus: 'pending', chatBusy: false })).toBe(false)
   })
 })

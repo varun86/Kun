@@ -90,6 +90,32 @@ export type DesignArtifact = {
   role?: 'design-system' | 'logo'
 }
 
+export type DesignArtifactFoundationRole = NonNullable<DesignArtifact['role']>
+
+export function inferDesignArtifactFoundationRole(
+  artifact: Pick<DesignArtifact, 'role' | 'title'>
+): DesignArtifactFoundationRole | undefined {
+  if (artifact.role === 'design-system' || artifact.role === 'logo') return artifact.role
+  const normalizedTitle = artifact.title.trim().toLowerCase().replace(/[\s_-]+/g, '')
+  if (!normalizedTitle) return undefined
+  if (
+    normalizedTitle.includes('designsystem') ||
+    normalizedTitle.includes('stylesystem') ||
+    normalizedTitle.includes('设计系统')
+  ) {
+    return 'design-system'
+  }
+  if (
+    normalizedTitle === 'logo' ||
+    normalizedTitle.includes('brandlogo') ||
+    normalizedTitle.includes('标志') ||
+    normalizedTitle.includes('徽标')
+  ) {
+    return 'logo'
+  }
+  return undefined
+}
+
 /**
  * A 设计稿 (design document) — the top-level container, one per directory under
  * `.kun-design/<id>/`. Holds multiple 画布 (canvas artifacts: HTML or SVG) and

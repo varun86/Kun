@@ -2,7 +2,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { DesignArtifact } from '../../../design/design-types'
-import { PrototypePlayerOverlay } from './PrototypePlayerOverlay'
+import { PrototypePlayerOverlay, shouldInjectPrototypeNavigationCapture } from './PrototypePlayerOverlay'
 
 const now = '2026-06-30T00:00:00.000Z'
 
@@ -21,6 +21,39 @@ function htmlArtifact(id: string, title: string, extra: Partial<DesignArtifact> 
 }
 
 describe('PrototypePlayerOverlay', () => {
+  it('waits for webview readiness before injecting navigation capture', () => {
+    expect(shouldInjectPrototypeNavigationCapture({
+      open: true,
+      webviewUrl: 'file:///workspace/.kun-design/doc/home/v1.html?rev=1',
+      webviewReady: false,
+      hasExecuteJavaScript: true
+    })).toBe(false)
+    expect(shouldInjectPrototypeNavigationCapture({
+      open: true,
+      webviewUrl: 'file:///workspace/.kun-design/doc/home/v1.html?rev=1',
+      webviewReady: true,
+      hasExecuteJavaScript: true
+    })).toBe(true)
+    expect(shouldInjectPrototypeNavigationCapture({
+      open: false,
+      webviewUrl: 'file:///workspace/.kun-design/doc/home/v1.html?rev=1',
+      webviewReady: true,
+      hasExecuteJavaScript: true
+    })).toBe(false)
+    expect(shouldInjectPrototypeNavigationCapture({
+      open: true,
+      webviewUrl: '',
+      webviewReady: true,
+      hasExecuteJavaScript: true
+    })).toBe(false)
+    expect(shouldInjectPrototypeNavigationCapture({
+      open: true,
+      webviewUrl: 'file:///workspace/.kun-design/doc/home/v1.html?rev=1',
+      webviewReady: true,
+      hasExecuteJavaScript: false
+    })).toBe(false)
+  })
+
   it('renders an app-target prototype shell with phone viewport and all screens', () => {
     const html = renderToStaticMarkup(
       createElement(PrototypePlayerOverlay, {

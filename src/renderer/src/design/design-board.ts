@@ -26,7 +26,13 @@ import { useCanvasSelectionStore } from './canvas/canvas-selection-store'
 import { useCanvasShapeStore } from './canvas/canvas-shape-store'
 import { useCanvasViewportStore } from './canvas/canvas-viewport-store'
 import { serializeCanvasDocument } from './canvas/canvas-persistence'
-import { createDesignArtifactId, defaultDesignArtifactNode, type DesignArtifact, type DesignArtifactNode } from './design-types'
+import {
+  createDesignArtifactId,
+  defaultDesignArtifactNode,
+  inferDesignArtifactFoundationRole,
+  type DesignArtifact,
+  type DesignArtifactNode
+} from './design-types'
 import { useDesignWorkspaceStore } from './design-workspace-store'
 
 export type SyncHtmlArtifactsToBoardResult = {
@@ -67,6 +73,7 @@ export function buildHtmlArtifactSyncKey(
         return [
           artifact.id,
           artifact.title,
+          inferDesignArtifactFoundationRole(artifact) ?? '',
           node?.x ?? '',
           node?.y ?? '',
           node?.width ?? '',
@@ -74,7 +81,7 @@ export function buildHtmlArtifactSyncKey(
           node?.sizeMode ?? '',
           node?.viewMode ?? ''
         ].join(':')
-	      })
+      })
   ].join('|')
 }
 
@@ -123,8 +130,41 @@ function shouldUseArtifactNode(node: DesignArtifactNode | undefined, index: numb
   return Boolean(node && node.sizeMode !== 'auto' && !artifactNodeIsDefault(node, index))
 }
 
-function autoArtifactNode(node: DesignArtifactNode | undefined, index: number): DesignArtifactNode | null {
-  return node?.sizeMode === 'auto' && !artifactNodeIsDefault(node, index) ? node : null
+function isFoundationArtifact(artifact: DesignArtifact): boolean {
+  return Boolean(inferDesignArtifactFoundationRole(artifact))
+}
+
+function shouldUseArtifactNodeForFrame(artifact: DesignArtifact, index: number): artifact is DesignArtifact & { node: DesignArtifactNode } {
+  return !isFoundationArtifact(artifact) && shouldUseArtifactNode(artifact.node, index)
+}
+
+function autoArtifactNode(artifact: DesignArtifact, index: number): DesignArtifactNode | null {
+  return artifact.node?.sizeMode === 'auto' && !artifactNodeIsDefault(artifact.node, index) ? artifact.node : null
+}
+
+function defaultFrameSizeForArtifact(
+  artifact: DesignArtifact,
+  index: number,
+  designTarget: DesignTarget | undefined
+): Pick<Rect, 'width' | 'height'> {
+  if (isFoundationArtifact(artifact)) {
+    const compact = defaultDesignArtifactNode(index)
+    const measuredAutoNode = autoArtifactNode(artifact, index)
+    return {
+      width: compact.width,
+      height: measuredAutoNode
+        ? Math.max(BOARD_HTML_FRAME_MIN_HEIGHT, Math.round(measuredAutoNode.height))
+        : compact.height
+    }
+  }
+  return defaultFrameSizeForDesignTarget(designTarget)
+}
+
+function defaultDevicePresetForArtifact(
+  artifact: DesignArtifact,
+  designTarget: DesignTarget | undefined
+): 'desktop' | 'mobile' {
+  return isFoundationArtifact(artifact) ? 'desktop' : defaultDevicePresetForDesignTarget(designTarget)
 }
 
 function frameNodePatch(shape: CanvasShape): DesignArtifactNode | null {
@@ -177,14 +217,16 @@ export function syncHtmlArtifactsToBoardDocument(
   const updatedFrameIds: string[] = []
   let next: CanvasDocument | null = null
   const designTarget = useDesignWorkspaceStore.getState().designContext.designTarget
-  const defaultFrameSize = defaultFrameSizeForDesignTarget(designTarget)
-  const defaultDevicePreset = defaultDevicePresetForDesignTarget(designTarget)
   const framesByArtifactId = linkedHtmlFrames(doc)
-  const autoPlaceArtifacts = htmlArtifacts.filter((artifact, index) =>
-    !framesByArtifactId.has(artifact.id) && !shouldUseArtifactNode(artifact.node, index)
-  )
+  const autoPlaceArtifacts = htmlArtifacts
+    .map((artifact, index) => ({ artifact, index }))
+    .filter(({ artifact, index }) =>
+      !framesByArtifactId.has(artifact.id) && !shouldUseArtifactNodeForFrame(artifact, index)
+    )
   const autoRects = layoutRectsInViewport(
-    autoPlaceArtifacts.map(() => defaultFrameSize),
+    autoPlaceArtifacts.map(({ artifact, index }) =>
+      defaultFrameSizeForArtifact(artifact, index, designTarget)
+    ),
     useCanvasViewportStore.getState().vbox
   )
   const occupiedAutoRects: Rect[] = Array.from(framesByArtifactId.values()).map((shape) => ({
@@ -198,8 +240,10 @@ export function syncHtmlArtifactsToBoardDocument(
 
   htmlArtifacts.forEach((artifact, index) => {
     const existing = framesByArtifactId.get(artifact.id)
-    const customNode = shouldUseArtifactNode(artifact.node, index) ? artifact.node : null
-    const autoNode = autoArtifactNode(artifact.node, index)
+    const customNode = shouldUseArtifactNodeForFrame(artifact, index) ? artifact.node : null
+    const autoNode = autoArtifactNode(artifact, index)
+    const defaultFrameSize = defaultFrameSizeForArtifact(artifact, index, designTarget)
+    const defaultDevicePreset = defaultDevicePresetForArtifact(artifact, designTarget)
     if (existing) {
       const patch: Partial<CanvasShape> = {}
       const nextName = artifact.title || existing.name

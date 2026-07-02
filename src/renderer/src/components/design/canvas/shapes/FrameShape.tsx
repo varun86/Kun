@@ -24,9 +24,6 @@ function HtmlFramePlaceholder({
 }) {
   return (
     <>
-      {generating ? null : (
-        <rect x={0} y={0} width={shape.width} height={shape.height} fill="#ffffff" rx={4} />
-      )}
       <rect
         x={0}
         y={0}
@@ -35,7 +32,7 @@ function HtmlFramePlaceholder({
         fill="none"
         stroke="#d1d5db"
         strokeWidth={1}
-        strokeDasharray="6 3"
+        strokeDasharray={generating ? '6 3' : '7 4'}
         rx={4}
       />
     </>

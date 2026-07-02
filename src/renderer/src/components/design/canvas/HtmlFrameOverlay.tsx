@@ -6,7 +6,12 @@ import { useCanvasSelectionStore } from '../../../design/canvas/canvas-selection
 import { isHtmlFrame, type CanvasShape } from '../../../design/canvas/canvas-types'
 import type { DesignHtmlElementContext } from '../../../design/design-composer-context'
 import { startDesignHtmlPreviewWatch } from '../../../design/design-preview-file'
+import {
+  inferDesignArtifactFoundationRole,
+  type DesignArtifactFoundationRole
+} from '../../../design/design-types'
 import { useDesignWorkspaceStore } from '../../../design/design-workspace-store'
+import { useChatStore } from '../../../store/chat-store'
 import {
   buildDesignRuntimeQualityAuditScript,
   getDesignRuntimeQualityFindings,
@@ -18,7 +23,7 @@ import {
   type DesignRuntimeQualityPayload
 } from '../../../design/design-html-quality'
 
-const MAX_ACTIVE_WEBVIEWS = 6
+const MAX_ACTIVE_WEBVIEWS = 10
 const MIN_ZOOM_FOR_WEBVIEW = 0.04
 
 /** Hide the "AI is drawing here" cursor this long after the last file change. */
@@ -31,11 +36,56 @@ const PREVIEW_MAX_WAIT_MS = 300_000
 const FRAME_AUTO_GROW_THRESHOLD = 12
 const FRAME_AUTO_GROW_MAX_HEIGHT = 12_000
 const FRAME_AUTO_GROW_MIN_HEIGHT = 180
+const HTML_FRAME_SCROLLBAR_STYLE_ID = '__kun_html_frame_auto_crop_scrollbars__'
 
-const CONTENT_SIZE_QUERY = `(() => {
+export const HTML_FRAME_CONTENT_SIZE_QUERY = `(() => {
   const html = document.documentElement
   const body = document.body
   const nums = (...values) => values.filter((v) => Number.isFinite(v) && v > 0)
+  const numericCss = (value) => {
+    const n = Number.parseFloat(value || '0')
+    return Number.isFinite(n) ? n : 0
+  }
+  const textBottoms = (el, style) => {
+    const bottoms = []
+    for (const node of Array.from(el.childNodes)) {
+      if (node.nodeType !== Node.TEXT_NODE) continue
+      if (!(node.textContent || '').trim()) continue
+      const range = document.createRange()
+      range.selectNodeContents(node)
+      for (const piece of Array.from(range.getClientRects())) {
+        if (piece.width < 1 || piece.height < 1) continue
+        bottoms.push(piece.bottom + window.scrollY + numericCss(style.paddingBottom) + numericCss(style.borderBottomWidth))
+      }
+      if (typeof range.detach === 'function') range.detach()
+    }
+    return bottoms
+  }
+  const hasVisibleBoxPaint = (el, style, rect) => {
+    if (el === body || el === html) return false
+    const backgroundColor = style.backgroundColor || ''
+    const hasBackgroundColor = backgroundColor && !/rgba?\\(\\s*0\\s*,\\s*0\\s*,\\s*0\\s*,\\s*0\\s*\\)|transparent/i.test(backgroundColor)
+    const hasBackgroundImage = style.backgroundImage && style.backgroundImage !== 'none'
+    if (hasBackgroundImage) return true
+    if (rect.height > Math.max(480, window.innerHeight * 0.65)) return false
+    return hasBackgroundColor
+  }
+  const candidates = body ? [body, ...Array.from(body.querySelectorAll('*'))] : []
+  const visibleElementBottoms = candidates.flatMap((el) => {
+        if (!(el instanceof HTMLElement || el instanceof SVGElement)) return []
+        const tag = el.tagName.toLowerCase()
+        if (tag === 'script' || tag === 'style' || tag === 'template') return []
+        const style = window.getComputedStyle(el)
+        if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return []
+        const rect = el.getBoundingClientRect()
+        if (rect.width < 1 || rect.height < 1) return []
+        const hasMedia = ['img', 'svg', 'canvas', 'video', 'picture'].includes(tag)
+        return [
+          ...textBottoms(el, style),
+          ...(hasMedia || hasVisibleBoxPaint(el, style, rect) ? [rect.bottom + window.scrollY] : [])
+        ]
+      })
+  const paintedHeight = visibleElementBottoms.length ? Math.max(...visibleElementBottoms) : 0
   const width = Math.max(...nums(
     html?.scrollWidth,
     html?.offsetWidth,
@@ -45,17 +95,105 @@ const CONTENT_SIZE_QUERY = `(() => {
     body?.clientWidth,
     window.innerWidth
   ), 1)
-  const height = Math.max(...nums(
+  const documentHeight = Math.max(...nums(
     html?.scrollHeight,
     html?.offsetHeight,
     html?.clientHeight,
     body?.scrollHeight,
     body?.offsetHeight,
-    body?.clientHeight,
-    window.innerHeight
+    body?.clientHeight
   ), 1)
-  return { width: Math.ceil(width), height: Math.ceil(height) }
+  const height = paintedHeight > 0 ? Math.min(documentHeight, paintedHeight + 16) : documentHeight
+  return {
+    width: Math.ceil(width),
+    height: Math.ceil(height),
+    documentHeight: Math.ceil(documentHeight),
+    paintedHeight: Math.ceil(paintedHeight)
+  }
 })()`
+
+export function htmlFrameShouldSuppressDocumentScrollbars({
+  measuredHeight,
+  documentHeight
+}: {
+  measuredHeight: number
+  documentHeight: number
+}): boolean {
+  return documentHeight > measuredHeight + FRAME_AUTO_GROW_THRESHOLD
+}
+
+export function buildHtmlFrameScrollbarSuppressionScript(suppress: boolean): string {
+  const css = `
+    html,
+    body {
+      overflow: hidden !important;
+      min-height: 0 !important;
+    }
+    ::-webkit-scrollbar {
+      width: 0 !important;
+      height: 0 !important;
+      display: none !important;
+    }
+  `
+  return `(() => {
+    const id = ${JSON.stringify(HTML_FRAME_SCROLLBAR_STYLE_ID)}
+    const existing = document.getElementById(id)
+    if (!${JSON.stringify(suppress)}) {
+      if (existing) existing.remove()
+      return
+    }
+    const style = existing || document.createElement('style')
+    style.id = id
+    style.textContent = ${JSON.stringify(css)}
+    ;(document.head || document.documentElement).appendChild(style)
+  })()`
+}
+
+type HtmlFrameWebviewScriptHost = {
+  executeJavaScript?: (code: string) => Promise<unknown>
+}
+
+export function executeHtmlFrameWebviewScript(
+  webview: HtmlFrameWebviewScriptHost | null | undefined,
+  code: string
+): Promise<unknown> | null {
+  if (typeof webview?.executeJavaScript !== 'function') return null
+  try {
+    return webview.executeJavaScript(code)
+  } catch {
+    // Electron throws synchronously when a <webview> exists but is not attached
+    // and dom-ready yet. Callers still handle rejected guest promises normally.
+    return null
+  }
+}
+
+export type HtmlFrameMeasurementDecision = {
+  nextHeight: number
+  documentHeight: number
+  suppressScrollbars: boolean
+}
+
+export function resolveHtmlFrameMeasurementDecision(value: unknown): HtmlFrameMeasurementDecision | null {
+  if (!value || typeof value !== 'object') return null
+  const measured = value as { height?: unknown; documentHeight?: unknown }
+  if (typeof measured.height !== 'number' || !Number.isFinite(measured.height)) return null
+  const documentHeight =
+    typeof measured.documentHeight === 'number' && Number.isFinite(measured.documentHeight)
+      ? measured.documentHeight
+      : measured.height
+  const nextHeight = Math.max(
+    FRAME_AUTO_GROW_MIN_HEIGHT,
+    Math.min(FRAME_AUTO_GROW_MAX_HEIGHT, Math.ceil(measured.height))
+  )
+  return {
+    nextHeight,
+    documentHeight,
+    suppressScrollbars: htmlFrameShouldSuppressDocumentScrollbars({
+      measuredHeight: nextHeight,
+      documentHeight
+    })
+  }
+}
 
 function qualityBadgeClasses(kind: ReturnType<typeof summarizeDesignHtmlQualityStatus>['kind']): string {
   if (kind === 'critical') return 'border-red-300/70 bg-red-50/92 text-red-600'
@@ -76,8 +214,81 @@ function qualityFindingLabel(severity: DesignHtmlQualityFinding['severity']): st
   return 'note'
 }
 
-export function shouldRenderHtmlFrameWebview(fileUrl: string, skeletonPreview: boolean): boolean {
-  return Boolean(fileUrl) && !skeletonPreview
+export function shouldRenderHtmlFrameWebview(fileUrl: string): boolean {
+  // Mount as soon as an authorized file URL exists, even while it still holds the
+  // skeleton. The skeleton is a self-contained "Generating…" page, so mounting
+  // early lets the agent's first real write paint live (the webview navigates in
+  // place) instead of waiting behind a placeholder until the skeleton is replaced.
+  return Boolean(fileUrl)
+}
+
+export function htmlFrameOverlayPointerEvents({
+  panning,
+  interactive,
+  editing
+}: {
+  panning: boolean
+  interactive: boolean
+  editing: boolean
+}): 'auto' | 'none' {
+  if (panning) return 'none'
+  return interactive || editing ? 'auto' : 'none'
+}
+
+export function htmlFrameVisualCanvasHeight(
+  canvasHeight: number,
+  measuredContentHeight: number | null
+): number {
+  if (!measuredContentHeight) return canvasHeight
+  return Math.max(FRAME_AUTO_GROW_MIN_HEIGHT, Math.min(canvasHeight, measuredContentHeight))
+}
+
+export function shouldAutoResizeHtmlFrame({
+  sizeMode,
+  role,
+  previewStatus,
+  parallelStatus
+}: {
+  sizeMode?: 'auto' | 'manual'
+  role?: DesignArtifactFoundationRole
+  previewStatus?: 'pending' | 'ready' | 'error'
+  parallelStatus?: 'queued' | 'running' | 'done' | 'failed'
+}): boolean {
+  return (
+    sizeMode !== 'manual' ||
+    Boolean(role) ||
+    previewStatus === 'pending' ||
+    parallelStatus === 'queued' ||
+    parallelStatus === 'running'
+  )
+}
+
+export function htmlFrameDrawingActive({
+  foundationRole,
+  previewStatus,
+  parallelStatus,
+  pagesRunPhase,
+  pagesRunStep,
+  chatBusy
+}: {
+  foundationRole?: DesignArtifactFoundationRole
+  previewStatus?: 'pending' | 'ready' | 'error'
+  parallelStatus?: 'queued' | 'running' | 'done' | 'failed'
+  pagesRunPhase?: 'foundation' | 'planning' | 'generating'
+  pagesRunStep?: 'spec' | 'system' | 'logo'
+  chatBusy: boolean
+}): boolean {
+  if (parallelStatus === 'queued' || parallelStatus === 'running') return true
+  if (
+    pagesRunPhase === 'foundation' &&
+    (
+      (pagesRunStep === 'system' && foundationRole === 'design-system') ||
+      (pagesRunStep === 'logo' && foundationRole === 'logo')
+    )
+  ) {
+    return true
+  }
+  return !foundationRole && !parallelStatus && previewStatus === 'pending' && chatBusy
 }
 
 /**
@@ -108,6 +319,9 @@ const AI_SECTION_QUERY = `(() => {
 
 type WebviewElement = HTMLElement & {
   executeJavaScript?: (code: string) => Promise<unknown>
+  loadURL?: (url: string) => Promise<void>
+  reload?: () => void
+  getURL?: () => string
 }
 
 type ScreenOverlayProps = {
@@ -168,11 +382,21 @@ function ScreenOverlayInner({
   } | null>(null)
   const aiFadeTimerRef = useRef<number>(0)
   const firstRevisionRef = useRef<number | null>(null)
+  // Drive live preview refreshes imperatively (loadURL) instead of via a changing
+  // React `key`/`src`. Track which file the webview is showing and the last revision
+  // we navigated to so streaming writes refresh the SAME element (no remount → no
+  // white flash) while still advancing to the newest file content.
+  const webviewReadyRef = useRef(false)
+  const loadedFileRef = useRef('')
+  const lastLoadedRevisionRef = useRef(-1)
   const qualitySignatureRef = useRef('')
   const measurementTimersRef = useRef<number[]>([])
   const [qualityChecked, setQualityChecked] = useState(false)
   const [qualityFindings, setQualityFindings] = useState<DesignHtmlQualityFinding[]>([])
   const [qualityDetailsOpen, setQualityDetailsOpen] = useState(false)
+  const [measuredContentHeight, setMeasuredContentHeight] = useState<number | null>(null)
+  const [suppressDocumentScrollbars, setSuppressDocumentScrollbars] = useState(false)
+  const [webviewMountNonce, setWebviewMountNonce] = useState(0)
 
   const artifact = useDesignWorkspaceStore((s) =>
     s.artifacts.find((a) => a.id === shape.htmlArtifactId)
@@ -182,11 +406,32 @@ function ScreenOverlayInner({
   const parallelState = useDesignWorkspaceStore((s) =>
     shape.htmlArtifactId ? s.parallelPageStates[shape.htmlArtifactId] : undefined
   )
+  const pagesRun = useDesignWorkspaceStore((s) => s.pagesRun)
   const setFileError = useDesignWorkspaceStore((s) => s.setFileError)
   const setArtifactPreviewStatus = useDesignWorkspaceStore((s) => s.setArtifactPreviewStatus)
+  // A design turn is in flight: the agent is still streaming HTML into the file.
+  // Keep the frame in its transparent "generating" surface until the turn settles
+  // so a half-written page never shows the opaque white frame band beneath it.
+  const chatBusy = useChatStore((s) => s.busy)
 
   const canvasWidth = Math.max(1, shape.width)
   const canvasHeight = Math.max(1, shape.height)
+  const foundationRole = artifact ? inferDesignArtifactFoundationRole(artifact) : undefined
+  const drawingActive = htmlFrameDrawingActive({
+    foundationRole,
+    previewStatus: artifact?.previewStatus,
+    parallelStatus: parallelState?.status,
+    pagesRunPhase: pagesRun?.phase,
+    pagesRunStep: pagesRun?.step,
+    chatBusy
+  })
+
+  const setWebviewNode = useCallback((node: WebviewElement | null): void => {
+    webviewRef.current = node
+    if (!node) return
+    webviewReadyRef.current = false
+    setWebviewMountNonce((value) => value + 1)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -224,10 +469,12 @@ function ScreenOverlayInner({
               },
               onSkeletonChange: (isSkeleton) => {
                 if (cancelled) return
+                // Only flip the skeleton gate here. Marking the preview "ready" the
+                // instant the skeleton is replaced ended the transparent generating
+                // surface mid-stream, exposing a white frame band under the partial
+                // page. The turn-settled effect below promotes to "ready" once the
+                // agent actually stops writing (chat no longer busy).
                 setSkeletonPreview(isSkeleton)
-                if (!isSkeleton && artifact?.id) {
-                  setArtifactPreviewStatus(artifact.id, 'ready')
-                }
               },
               onError: reportError
             })
@@ -264,6 +511,7 @@ function ScreenOverlayInner({
     }
   }, [
     artifact?.id,
+    artifact?.previewStatus,
     artifactKind,
     artifactRelativePath,
     setArtifactPreviewStatus,
@@ -281,14 +529,13 @@ function ScreenOverlayInner({
 
   const selectElementAt = useCallback(
     (event: React.PointerEvent<HTMLDivElement>): void => {
-      if (!editing || interactive || !artifact || !webviewRef.current?.executeJavaScript) return
+      if (!editing || interactive || !artifact) return
       event.preventDefault()
       event.stopPropagation()
       const rect = event.currentTarget.getBoundingClientRect()
       const x = rect.width > 0 ? ((event.clientX - rect.left) / rect.width) * canvasWidth : 0
       const y = rect.height > 0 ? ((event.clientY - rect.top) / rect.height) * canvasHeight : 0
-      void webviewRef.current
-        .executeJavaScript(`(() => {
+      const selectionQuery = executeHtmlFrameWebviewScript(webviewRef.current, `(() => {
           const x = ${JSON.stringify(x)}
           const y = ${JSON.stringify(y)}
           const escapeCss = (value) => {
@@ -336,6 +583,8 @@ function ScreenOverlayInner({
             }
           }
         })()`)
+      if (!selectionQuery) return
+      void selectionQuery
         .then((value) => {
           if (!value || typeof value !== 'object') return
           const result = value as {
@@ -395,6 +644,8 @@ function ScreenOverlayInner({
 
   useEffect(() => {
     setSelectedElementRect(null)
+    setMeasuredContentHeight(null)
+    setSuppressDocumentScrollbars(false)
   }, [artifact?.id, artifact?.relativePath, shape.id])
 
   useEffect(() => {
@@ -417,9 +668,9 @@ function ScreenOverlayInner({
 
   const queryAiCursor = useCallback(() => {
     const wv = webviewRef.current
-    if (typeof wv?.executeJavaScript !== 'function') return
-    void wv
-      .executeJavaScript(AI_SECTION_QUERY)
+    const query = executeHtmlFrameWebviewScript(wv, AI_SECTION_QUERY)
+    if (!query) return
+    void query
       .then((value) => {
         if (!value || typeof value !== 'object') return
         const v = value as Record<string, unknown>
@@ -470,25 +721,90 @@ function ScreenOverlayInner({
     []
   )
 
-  const webviewUrl = shouldRenderHtmlFrameWebview(fileUrl, skeletonPreview)
+  // Promote a pending preview to "ready" only once the turn has settled: the file
+  // holds real (non-skeleton) HTML and the agent is no longer streaming. This keeps
+  // the transparent generating surface up for the whole write so the canvas updates
+  // live without an opaque white frame appearing mid-stream.
+  useEffect(() => {
+    if (!artifact?.id || artifact.previewStatus !== 'pending') return
+    if (skeletonPreview || drawingActive) return
+    setArtifactPreviewStatus(artifact.id, 'ready')
+  }, [artifact?.id, artifact?.previewStatus, skeletonPreview, drawingActive, setArtifactPreviewStatus])
+
+  const webviewUrl = shouldRenderHtmlFrameWebview(fileUrl)
     ? `${fileUrl}${fileUrl.includes('?') ? '&' : '?'}rev=${revision}`
     : ''
 
+  // Imperatively navigate the (stable, never-remounted) webview to the newest file
+  // revision. The declarative `src` attribute load only fires reliably on the first
+  // mount; relying on it for every revision left the preview frozen on an early
+  // chunk (header only) with the rest of the frame blank. Calling loadURL here once
+  // the element is dom-ready — and again on each debounced revision bump — guarantees
+  // the canvas reflects the final HTML, while keeping the old frame painted until the
+  // next page is ready (no white flash, no remount).
+  useEffect(() => {
+    if (fileUrl !== loadedFileRef.current) {
+      // A new file URL means React mounted a fresh <webview>; reset load tracking.
+      webviewReadyRef.current = false
+      loadedFileRef.current = fileUrl
+      lastLoadedRevisionRef.current = -1
+    }
+    const wv = webviewRef.current
+    if (!wv || !webviewUrl) return
+    const target = webviewUrl
+    const navigate = (): void => {
+      if (lastLoadedRevisionRef.current === revision) return
+      lastLoadedRevisionRef.current = revision
+      if (typeof wv.loadURL === 'function') {
+        try {
+          void wv.loadURL(target).catch(() => undefined)
+        } catch {
+          /* webview may detach while React is swapping canvas state */
+        }
+      } else if (typeof wv.reload === 'function') {
+        try {
+          wv.reload()
+        } catch {
+          /* webview may detach while React is swapping canvas state */
+        }
+      }
+    }
+    if (webviewReadyRef.current) {
+      navigate()
+      return
+    }
+    const onReady = (): void => {
+      webviewReadyRef.current = true
+      navigate()
+    }
+    wv.addEventListener('dom-ready', onReady)
+    return () => wv.removeEventListener('dom-ready', onReady)
+  }, [fileUrl, revision, webviewMountNonce, webviewUrl])
+
+  useEffect(() => {
+    const wv = webviewRef.current
+    if (!webviewUrl) return
+    void executeHtmlFrameWebviewScript(
+      wv,
+      buildHtmlFrameScrollbarSuppressionScript(suppressDocumentScrollbars)
+    )?.catch(() => undefined)
+  }, [revision, suppressDocumentScrollbars, webviewMountNonce, webviewUrl])
+
   const measureContentSize = useCallback((): void => {
     const wv = webviewRef.current
-    if (!artifact?.id || artifactKind !== 'html' || typeof wv?.executeJavaScript !== 'function') return
-    const allowAutoGrow =
-      artifact.node?.sizeMode !== 'manual' ||
-      artifact.previewStatus === 'pending' ||
-      parallelState?.status === 'queued' ||
-      parallelState?.status === 'running'
-    if (!allowAutoGrow) return
-    void wv
-      .executeJavaScript(CONTENT_SIZE_QUERY)
+    if (!artifact?.id || artifactKind !== 'html') return
+    const allowAutoGrow = shouldAutoResizeHtmlFrame({
+      sizeMode: artifact.node?.sizeMode,
+      role: foundationRole,
+      previewStatus: artifact.previewStatus,
+      parallelStatus: parallelState?.status
+    })
+    const measurement = executeHtmlFrameWebviewScript(wv, HTML_FRAME_CONTENT_SIZE_QUERY)
+    if (!measurement) return
+    void measurement
       .then((value) => {
-        if (!value || typeof value !== 'object') return
-        const measured = value as { width?: unknown; height?: unknown }
-        if (typeof measured.height !== 'number' || !Number.isFinite(measured.height)) return
+        const decision = resolveHtmlFrameMeasurementDecision(value)
+        if (!decision) return
         const store = useCanvasShapeStore.getState()
         const current = store.document.objects[shape.id]
         if (!current) return
@@ -497,10 +813,18 @@ function ScreenOverlayInner({
         // while the agent streamed the HTML, so once the final (shorter) layout
         // lands the frame keeps the leftover space as a big white band below the
         // content. Mirroring DesignProjectCanvas, follow the real content height.
-        const nextHeight = Math.max(
-          FRAME_AUTO_GROW_MIN_HEIGHT,
-          Math.min(FRAME_AUTO_GROW_MAX_HEIGHT, Math.ceil(measured.height))
-        )
+        const { nextHeight, suppressScrollbars } = decision
+        setMeasuredContentHeight(nextHeight)
+        setSuppressDocumentScrollbars(suppressScrollbars)
+        // A <webview> navigation replaces the guest document, so an already-true
+        // React state value is not enough to keep the injected style alive across
+        // streamed file reloads. Apply it to the CURRENT document immediately after
+        // every measurement; the state/effect path still covers explicit toggles.
+        void executeHtmlFrameWebviewScript(
+          wv,
+          buildHtmlFrameScrollbarSuppressionScript(suppressScrollbars)
+        )?.catch(() => undefined)
+        if (!allowAutoGrow) return
         if (Math.abs(nextHeight - current.height) <= FRAME_AUTO_GROW_THRESHOLD) return
         store.updateShape(shape.id, { height: nextHeight }, true)
         useDesignWorkspaceStore.getState().updateArtifactNode(artifact.id, {
@@ -508,7 +832,7 @@ function ScreenOverlayInner({
           y: Math.round(current.y),
           width: Math.round(current.width),
           height: nextHeight,
-          sizeMode: artifact.node?.sizeMode === 'manual' ? 'manual' : 'auto',
+          sizeMode: 'auto',
           viewMode: artifact.node?.viewMode ?? 'preview'
         })
       })
@@ -518,7 +842,10 @@ function ScreenOverlayInner({
     artifact?.node?.sizeMode,
     artifact?.node?.viewMode,
     artifact?.previewStatus,
+    artifact?.role,
+    artifact?.title,
     artifactKind,
+    foundationRole,
     parallelState?.status,
     shape.id
   ])
@@ -549,20 +876,21 @@ function ScreenOverlayInner({
       wv.removeEventListener('dom-ready', queueContentMeasurement)
       wv.removeEventListener('did-finish-load', queueContentMeasurement)
     }
-  }, [canvasHeight, canvasWidth, queueContentMeasurement, revision, webviewUrl])
+  }, [canvasHeight, canvasWidth, queueContentMeasurement, revision, webviewMountNonce, webviewUrl])
 
   useEffect(() => {
     if (!webviewUrl || artifactKind !== 'html' || !artifact?.id || !artifactRelativePath) return
     const wv = webviewRef.current
-    if (typeof wv?.executeJavaScript !== 'function') return
-    const executeJavaScript = wv.executeJavaScript.bind(wv)
+    if (!wv) return
     let cancelled = false
     let timer = 0
     const queueAudit = (): void => {
       window.clearTimeout(timer)
       timer = window.setTimeout(() => {
         if (cancelled) return
-        void executeJavaScript(buildDesignRuntimeQualityAuditScript())
+        const audit = executeHtmlFrameWebviewScript(wv, buildDesignRuntimeQualityAuditScript())
+        if (!audit) return
+        void audit
           .then((value) => {
             if (cancelled) return
             const findings = normalizeRuntimeQualityFindings(value)
@@ -595,11 +923,18 @@ function ScreenOverlayInner({
       wv.removeEventListener('dom-ready', queueAudit)
       wv.removeEventListener('did-finish-load', queueAudit)
     }
-  }, [artifact?.id, artifactKind, artifactRelativePath, onRuntimeQualityFindings, shape.id, webviewUrl])
+  }, [
+    artifact?.id,
+    artifactKind,
+    artifactRelativePath,
+    onRuntimeQualityFindings,
+    shape.id,
+    webviewMountNonce,
+    webviewUrl
+  ])
 
   if (screenWidth < 20 || screenHeight < 20) return <></>
 
-  const drawingActive = parallelState?.status === 'queued' || parallelState?.status === 'running'
   const drawingLabel = parallelState?.status === 'queued' ? 'AI 排队中…' : 'AI 正在绘制…'
   const failedMessage = parallelState?.status === 'failed'
     ? parallelState.error || '生成失败'
@@ -611,6 +946,11 @@ function ScreenOverlayInner({
   const chromeOffset = Math.min(28, Math.max(18, screenWidth * 0.045))
   const showChrome = screenWidth > 92 && screenHeight > 42
   const transparentGeneratingSurface = skeletonPreview || drawingActive
+  const visualCanvasHeight = htmlFrameVisualCanvasHeight(
+    canvasHeight,
+    measuredContentHeight
+  )
+  const visualScreenHeight = (visualCanvasHeight / canvasHeight) * screenHeight
   const QualityIcon =
     qualityStatus.kind === 'critical'
       ? AlertTriangle
@@ -627,8 +967,8 @@ function ScreenOverlayInner({
         left: screenX,
         top: screenY,
         width: screenWidth,
-        height: screenHeight,
-        pointerEvents: panning ? 'none' : active || interactive ? 'auto' : 'none',
+        height: visualScreenHeight,
+        pointerEvents: htmlFrameOverlayPointerEvents({ panning, interactive, editing }),
         borderRadius: frameRadius
       }}
       onDoubleClick={handleDoubleClick}
@@ -790,22 +1130,27 @@ function ScreenOverlayInner({
           className="absolute left-0 top-0 overflow-hidden"
           style={{
             width: canvasWidth,
-            height: canvasHeight,
+            height: visualCanvasHeight,
             transform: `scale(${zoom})`,
             transformOrigin: 'top left'
           }}
         >
           {webviewUrl ? (
             <webview
-              key={webviewUrl}
-              ref={webviewRef as React.Ref<WebviewElement>}
-              src={webviewUrl}
+              // Key on the stable file URL (NOT the rev'd one) so streaming writes
+              // never unmount/remount the webview. A remount destroys the webContents
+              // and repaints white; keeping the element mounted lets Electron navigate
+              // in place via the `src` change while the old frame stays painted until
+              // the next page is ready, so the canvas updates without a white flash.
+              key={fileUrl}
+              ref={setWebviewNode as React.Ref<WebviewElement>}
+              src={fileUrl}
               partition="kun-proto"
               webpreferences="contextIsolation=yes,nodeIntegration=no,sandbox=yes"
               className="block border-0"
               style={{
                 width: canvasWidth,
-                height: canvasHeight,
+                height: visualCanvasHeight,
                 pointerEvents: interactive ? 'auto' : 'none'
               }}
             />
@@ -923,6 +1268,10 @@ const ScreenOverlay = memo(ScreenOverlayInner)
 
 type Props = {
   workspaceRoot: string
+  interactiveId: string | null
+  editingId: string | null
+  onToggleInteractive: (shapeId: string) => void
+  onToggleModify: (shapeId: string) => void
   onUseElementAsContext?: (context: DesignHtmlElementContext | null, promptSeed?: string) => void
   onRuntimeQualityFindings?: (payload: DesignRuntimeQualityPayload) => void
   onRequestQualityRepair?: (payload: DesignRuntimeQualityPayload) => void
@@ -930,6 +1279,10 @@ type Props = {
 
 export function HtmlFrameOverlay({
   workspaceRoot,
+  interactiveId,
+  editingId,
+  onToggleInteractive,
+  onToggleModify,
   onUseElementAsContext,
   onRuntimeQualityFindings,
   onRequestQualityRepair
@@ -940,9 +1293,6 @@ export function HtmlFrameOverlay({
   const containerHeight = useCanvasViewportStore((s) => s.containerHeight)
   const activeTool = useCanvasViewportStore((s) => s.activeTool)
   const selectedIds = useCanvasSelectionStore((s) => s.selectedIds)
-
-  const [interactiveId, setInteractiveId] = useState<string | null>(null)
-  const [editingId, setEditingId] = useState<string | null>(null)
 
   const zoom = containerWidth / vbox.width
   const panning = activeTool === 'hand'
@@ -975,27 +1325,6 @@ export function HtmlFrameOverlay({
       })
   }, [htmlFrames, vbox, selectedIds])
 
-  const onDoubleClick = useCallback((shapeId: string) => {
-    // Browsing the live page and 修改 (element-pick) are mutually exclusive.
-    setEditingId(null)
-    setInteractiveId((prev) => (prev === shapeId ? null : shapeId))
-  }, [])
-
-  const onToggleModify = useCallback((shapeId: string) => {
-    setInteractiveId(null)
-    setEditingId((prev) => (prev === shapeId ? null : shapeId))
-  }, [])
-
-  // Exit interactive / 修改 modes on selection change
-  useEffect(() => {
-    if (interactiveId && !selectedIds.has(interactiveId)) {
-      setInteractiveId(null)
-    }
-    if (editingId && !selectedIds.has(editingId)) {
-      setEditingId(null)
-    }
-  }, [selectedIds, interactiveId, editingId])
-
   const selectedIdsKey = useMemo(() => [...selectedIds].sort().join(','), [selectedIds])
 
   useEffect(() => {
@@ -1027,7 +1356,7 @@ export function HtmlFrameOverlay({
             interactive={interactiveId === shape.id}
             panning={panning}
             editing={editingId === shape.id}
-            onDoubleClick={onDoubleClick}
+            onDoubleClick={onToggleInteractive}
             onToggleModify={onToggleModify}
             onUseElementAsContext={onUseElementAsContext}
             onRuntimeQualityFindings={onRuntimeQualityFindings}

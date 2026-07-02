@@ -30,7 +30,15 @@ export type StartDesignHtmlPreviewWatchOptions = {
   onRevision: (revision: number) => void
   onSkeletonChange?: (isSkeleton: boolean) => void
   onError: (message: string) => void
+  /**
+   * Debounce window (ms) applied to revision bumps from file-change events. The
+   * agent streams HTML in many small writes; coalescing them avoids reloading
+   * the preview webview on every keystroke (which causes white flashes).
+   */
+  revisionDebounceMs?: number
 }
+
+const DEFAULT_REVISION_DEBOUNCE_MS = 200
 
 const SKELETON_TITLE = '<title>Generating design preview</title>'
 const SKELETON_MARKER = 'Kun is preparing a live preview'
@@ -43,9 +51,15 @@ const SKELETON_STYLE = `
       color: #263238;
     }
     * { box-sizing: border-box; }
+    html,
     body {
       margin: 0;
-      min-height: 100vh;
+      width: 100%;
+      height: 100%;
+      min-height: 0;
+      overflow: hidden;
+    }
+    body {
       display: grid;
       place-items: center;
       background:
@@ -54,9 +68,12 @@ const SKELETON_STYLE = `
     }
     main {
       display: grid;
-      gap: 14px;
+      gap: clamp(8px, 3vh, 14px);
       place-items: center;
-      padding: 32px;
+      width: min(100%, 460px);
+      max-height: 100%;
+      overflow: hidden;
+      padding: clamp(12px, 5vh, 32px) clamp(14px, 6vw, 32px);
       text-align: center;
     }
     .mark {
@@ -86,9 +103,36 @@ const SKELETON_STYLE = `
     p {
       margin: 0;
       max-width: 460px;
-      font-size: 14px;
+      font-size: clamp(11px, 2.5vw, 14px);
       line-height: 1.6;
       color: #5f6b7a;
+    }
+    @media (max-height: 230px) {
+      main {
+        grid-template-columns: auto minmax(0, 1fr);
+        padding: 12px;
+        text-align: left;
+      }
+      .mark {
+        width: 32px;
+        height: 32px;
+        border-radius: 12px;
+      }
+      .pulse {
+        width: 9px;
+        height: 9px;
+      }
+      h1 {
+        font-size: 16px;
+      }
+      p {
+        grid-column: 1 / -1;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        line-height: 1.35;
+      }
     }
     @keyframes pulse {
       0%, 100% { transform: scale(0.82); opacity: 0.42; }
@@ -184,6 +228,8 @@ export function startDesignHtmlPreviewWatch(options: StartDesignHtmlPreviewWatch
   let cancelled = false
   let revision = 0
   let watchId = ''
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null
+  const debounceMs = Math.max(0, options.revisionDebounceMs ?? DEFAULT_REVISION_DEBOUNCE_MS)
 
   const unwatch = (id: string): void => {
     void api.unwatchWorkspaceFile(id).catch(() => undefined)
@@ -194,6 +240,20 @@ export function startDesignHtmlPreviewWatch(options: StartDesignHtmlPreviewWatch
     options.onRevision(revision)
   }
 
+  // Coalesce rapid streaming writes into a single trailing revision bump so the
+  // preview webview reloads at most once per quiet window instead of per write.
+  const scheduleBumpRevision = (): void => {
+    if (debounceMs <= 0) {
+      bumpRevision()
+      return
+    }
+    if (debounceTimer) clearTimeout(debounceTimer)
+    debounceTimer = setTimeout(() => {
+      debounceTimer = null
+      if (!cancelled) bumpRevision()
+    }, debounceMs)
+  }
+
   const reportContentState = (content: string): void => {
     options.onSkeletonChange?.(isDesignPreviewSkeleton(content))
   }
@@ -201,8 +261,10 @@ export function startDesignHtmlPreviewWatch(options: StartDesignHtmlPreviewWatch
   const offChanged = api.onWorkspaceFileChanged((payload) => {
     if (!watchId || payload.watchId !== watchId) return
     if (payload.ok) {
+      // Report skeleton state immediately so the webview can mount as soon as the
+      // first real HTML lands, but debounce the reload-triggering revision bump.
       reportContentState(payload.content)
-      bumpRevision()
+      scheduleBumpRevision()
       return
     }
     options.onError(payload.message)
@@ -232,6 +294,10 @@ export function startDesignHtmlPreviewWatch(options: StartDesignHtmlPreviewWatch
 
   return () => {
     cancelled = true
+    if (debounceTimer) {
+      clearTimeout(debounceTimer)
+      debounceTimer = null
+    }
     offChanged()
     if (watchId) unwatch(watchId)
   }

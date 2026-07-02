@@ -38,6 +38,20 @@ type Props = {
   onRequestMissingScreen?: (promptSeed: string) => void
 }
 
+export function shouldInjectPrototypeNavigationCapture({
+  open,
+  webviewUrl,
+  webviewReady,
+  hasExecuteJavaScript
+}: {
+  open: boolean
+  webviewUrl: string
+  webviewReady: boolean
+  hasExecuteJavaScript: boolean
+}): boolean {
+  return open && Boolean(webviewUrl) && webviewReady && hasExecuteJavaScript
+}
+
 function PrototypePlayerOverlayInner({
   open,
   workspaceRoot,
@@ -56,6 +70,8 @@ function PrototypePlayerOverlayInner({
   const [missingHref, setMissingHref] = useState('')
   const webviewRef = useRef<WebviewElement | null>(null)
   const wasOpenRef = useRef(false)
+  const webviewReadyRef = useRef(false)
+  const loadedWebviewUrlRef = useRef('')
 
   const initialCurrentId = useMemo(
     () => (open ? resolveInitialPrototypeArtifactId(artifacts, initialArtifactId) : null),
@@ -174,12 +190,34 @@ function PrototypePlayerOverlayInner({
   useEffect(() => {
     const webview = webviewRef.current
     if (!open || !webviewUrl || !fileUrl || !webview) return
+    if (loadedWebviewUrlRef.current !== webviewUrl) {
+      webviewReadyRef.current = false
+      loadedWebviewUrlRef.current = webviewUrl
+    }
 
     const injectNavigationCapture = (): void => {
-      if (typeof webview.executeJavaScript !== 'function') return
-      void webview.executeJavaScript(buildPrototypeNavigationCaptureScript(links)).catch(() => {
+      const executeJavaScript =
+        typeof webview.executeJavaScript === 'function'
+          ? webview.executeJavaScript.bind(webview)
+          : null
+      if (
+        !shouldInjectPrototypeNavigationCapture({
+          open,
+          webviewUrl,
+          webviewReady: webviewReadyRef.current,
+          hasExecuteJavaScript: Boolean(executeJavaScript)
+        })
+      ) {
+        return
+      }
+      void executeJavaScript?.(buildPrototypeNavigationCaptureScript(links)).catch(() => {
         /* Best-effort: explicit side-rail links still work if a guest blocks injection. */
       })
+    }
+
+    const markWebviewReady = (): void => {
+      webviewReadyRef.current = true
+      injectNavigationCapture()
     }
 
     const handleNavigate: EventListener = (event): void => {
@@ -202,15 +240,15 @@ function PrototypePlayerOverlayInner({
       if (capturedHref) setMissingHref(capturedHref)
     }
 
-    webview.addEventListener('dom-ready', injectNavigationCapture)
-    webview.addEventListener('did-finish-load', injectNavigationCapture)
+    webview.addEventListener('dom-ready', markWebviewReady)
+    webview.addEventListener('did-finish-load', markWebviewReady)
     webview.addEventListener('will-navigate', handleNavigate)
     webview.addEventListener('did-navigate-in-page', handleNavigate)
     injectNavigationCapture()
 
     return () => {
-      webview.removeEventListener('dom-ready', injectNavigationCapture)
-      webview.removeEventListener('did-finish-load', injectNavigationCapture)
+      webview.removeEventListener('dom-ready', markWebviewReady)
+      webview.removeEventListener('did-finish-load', markWebviewReady)
       webview.removeEventListener('will-navigate', handleNavigate)
       webview.removeEventListener('did-navigate-in-page', handleNavigate)
     }
@@ -271,7 +309,7 @@ function PrototypePlayerOverlayInner({
               >
                 {webviewUrl ? (
                   <webview
-                    key={webviewUrl}
+                    key={fileUrl}
                     ref={webviewRef as Ref<WebviewElement>}
                     src={webviewUrl}
                     partition="kun-proto"

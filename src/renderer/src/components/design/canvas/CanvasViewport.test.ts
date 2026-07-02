@@ -5,7 +5,8 @@ import {
   shouldHandleCanvasKeyboardEvent,
   shouldRenderDesignArtifactOverlays,
   shouldOpenImageAnnotation,
-  shouldSyncCanvasHtmlFrames
+  shouldSyncCanvasHtmlFrames,
+  shouldToggleHtmlFrameInteractiveOnDoubleClick
 } from './CanvasViewport'
 import { createDefaultShape } from '../../../design/canvas/canvas-types'
 
@@ -36,6 +37,17 @@ describe('CanvasViewport surface behavior', () => {
     expect(shouldOpenImageAnnotation('code', image)).toBe(true)
     expect(shouldOpenImageAnnotation('code', emptyImage)).toBe(false)
     expect(shouldOpenImageAnnotation('code', rect)).toBe(false)
+  })
+
+  it('toggles live HTML frame interaction from design-surface double-clicks only', () => {
+    const htmlFrame = createDefaultShape('frame', 0, 0)
+    htmlFrame.htmlArtifactId = 'artifact_html'
+    const plainFrame = createDefaultShape('frame', 0, 0)
+
+    expect(shouldToggleHtmlFrameInteractiveOnDoubleClick('design', htmlFrame)).toBe(true)
+    expect(shouldToggleHtmlFrameInteractiveOnDoubleClick('code', htmlFrame)).toBe(false)
+    expect(shouldToggleHtmlFrameInteractiveOnDoubleClick('design', plainFrame)).toBe(false)
+    expect(shouldToggleHtmlFrameInteractiveOnDoubleClick('design', undefined)).toBe(false)
   })
 
   it('allows code canvases to override the design-system persistence directory', () => {

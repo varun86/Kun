@@ -176,6 +176,100 @@ describe('design board helpers', () => {
     })
   })
 
+  it('keeps foundation artifacts compact instead of turning them into app-sized whiteboards', () => {
+    useDesignWorkspaceStore.setState({ designContext: { designTarget: 'app' } })
+    const logo = artifact('logo', 'html', {
+      title: 'Logo',
+      role: 'logo',
+      node: defaultDesignArtifactNode(0)
+    })
+
+    const synced = syncHtmlArtifactsToBoardDocument(createEmptyDocument(), [logo])
+
+    expect(synced.addedFrameIds).toHaveLength(1)
+    const frame = synced.document.objects[synced.addedFrameIds[0]]
+    expect(frame).toMatchObject({
+      htmlArtifactId: 'logo',
+      width: 420,
+      height: 340,
+      devicePreset: 'desktop'
+    })
+  })
+
+  it('keeps localized foundation-title artifacts compact when role metadata is missing', () => {
+    useDesignWorkspaceStore.setState({ designContext: { designTarget: 'app' } })
+    const system = artifact('system', 'html', {
+      title: '设计系统',
+      node: { x: 80, y: 120, width: 390, height: 844, sizeMode: 'manual' }
+    })
+
+    const synced = syncHtmlArtifactsToBoardDocument(createEmptyDocument(), [system])
+
+    expect(synced.addedFrameIds).toHaveLength(1)
+    const frame = synced.document.objects[synced.addedFrameIds[0]]
+    expect(frame).toMatchObject({
+      htmlArtifactId: 'system',
+      width: 420,
+      height: 340,
+      devicePreset: 'desktop'
+    })
+  })
+
+  it('shrinks existing foundation frames back to compact board cards even from old manual nodes', () => {
+    useDesignWorkspaceStore.setState({ designContext: { designTarget: 'app' } })
+    const doc = createEmptyDocument()
+    const root = doc.objects[doc.rootId]
+    const existing = createHtmlFrameShape('Logo', 80, 120, 'logo', 'mobile')
+    existing.width = 390
+    existing.height = 844
+    doc.objects[existing.id] = { ...existing, parentId: doc.rootId }
+    doc.objects[doc.rootId] = { ...root, children: [existing.id] }
+
+    const synced = syncHtmlArtifactsToBoardDocument(doc, [
+      artifact('logo', 'html', {
+        title: 'Logo',
+        role: 'logo',
+        node: { x: 80, y: 120, width: 390, height: 844, sizeMode: 'manual' }
+      })
+    ])
+
+    expect(synced.updatedFrameIds).toEqual([existing.id])
+    expect(synced.document.objects[existing.id]).toMatchObject({
+      x: 80,
+      y: 120,
+      width: 420,
+      height: 340,
+      devicePreset: 'desktop'
+    })
+  })
+
+  it('keeps measured auto height for foundation frames after board sync', () => {
+    useDesignWorkspaceStore.setState({ designContext: { designTarget: 'app' } })
+    const doc = createEmptyDocument()
+    const root = doc.objects[doc.rootId]
+    const existing = createHtmlFrameShape('设计系统', 80, 120, 'system', 'desktop')
+    existing.width = 420
+    existing.height = 340
+    doc.objects[existing.id] = { ...existing, parentId: doc.rootId }
+    doc.objects[doc.rootId] = { ...root, children: [existing.id] }
+
+    const synced = syncHtmlArtifactsToBoardDocument(doc, [
+      artifact('system', 'html', {
+        title: '设计系统',
+        node: { x: 80, y: 120, width: 420, height: 236, sizeMode: 'auto' }
+      })
+    ])
+
+    expect(synced.updatedFrameIds).toEqual([existing.id])
+    expect(synced.document.objects[existing.id]).toMatchObject({
+      x: 80,
+      y: 120,
+      width: 420,
+      height: 236,
+      devicePreset: 'desktop'
+    })
+  })
+
   it('keeps target-default synced frames in auto size mode', () => {
     const screen = artifact('home', 'html', {
       node: {

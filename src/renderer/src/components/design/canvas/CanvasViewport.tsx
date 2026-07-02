@@ -18,7 +18,7 @@ import { createArrowTool, createLineTool } from '../../../design/canvas/tools/li
 import { createDrawTool } from '../../../design/canvas/tools/draw-tool'
 import type { CanvasToolHandler } from '../../../design/canvas/tools/tool-types'
 import type { CanvasDocument, CanvasTool, Rect, ViewBox } from '../../../design/canvas/canvas-types'
-import { createEmptyDocument, shapeBounds } from '../../../design/canvas/canvas-types'
+import { createEmptyDocument, isHtmlFrame, shapeBounds } from '../../../design/canvas/canvas-types'
 import { canvasDocumentKey, loadCanvasDocument, persistCanvasDocument } from '../../../design/canvas/canvas-persistence'
 import { loadDesignSystem, persistDesignSystem } from '../../../design/canvas/design-system-persistence'
 import { useDesignSystemStore } from '../../../design/canvas/design-system-store'
@@ -77,6 +77,13 @@ export function shouldOpenImageAnnotation(
   shape: CanvasDocument['objects'][string] | undefined
 ): boolean {
   return (surface === 'design' || surface === 'code') && shape?.type === 'image' && Boolean(shape.imageUrl)
+}
+
+export function shouldToggleHtmlFrameInteractiveOnDoubleClick(
+  surface: 'design' | 'code',
+  shape: CanvasDocument['objects'][string] | undefined
+): boolean {
+  return shouldRenderDesignArtifactOverlays(surface) && Boolean(shape && isHtmlFrame(shape))
 }
 
 export function resolveCanvasDesignSystemBaseDir(
@@ -251,6 +258,8 @@ export function CanvasViewport({
 
   const [docLoaded, setDocLoaded] = useState(false)
   const [prototypePlayerOpen, setPrototypePlayerOpen] = useState(false)
+  const [interactiveHtmlFrameId, setInteractiveHtmlFrameId] = useState<string | null>(null)
+  const [editingHtmlFrameId, setEditingHtmlFrameId] = useState<string | null>(null)
 
   const requestCanvasCritique = useCallback((promptSeed: string): void => {
     onUseElementAsContext?.(null, promptSeed)
@@ -258,6 +267,25 @@ export function CanvasViewport({
   const requestMissingPrototypeScreen = useCallback((promptSeed: string): void => {
     onUseElementAsContext?.(null, promptSeed)
   }, [onUseElementAsContext])
+
+  const toggleHtmlFrameInteractive = useCallback((shapeId: string): void => {
+    setEditingHtmlFrameId(null)
+    setInteractiveHtmlFrameId((prev) => (prev === shapeId ? null : shapeId))
+  }, [])
+
+  const toggleHtmlFrameModify = useCallback((shapeId: string): void => {
+    setInteractiveHtmlFrameId(null)
+    setEditingHtmlFrameId((prev) => (prev === shapeId ? null : shapeId))
+  }, [])
+
+  useEffect(() => {
+    if (interactiveHtmlFrameId && !selectedIds.has(interactiveHtmlFrameId)) {
+      setInteractiveHtmlFrameId(null)
+    }
+    if (editingHtmlFrameId && !selectedIds.has(editingHtmlFrameId)) {
+      setEditingHtmlFrameId(null)
+    }
+  }, [editingHtmlFrameId, interactiveHtmlFrameId, selectedIds])
 
   const designArtifactOverlaysEnabled = shouldRenderDesignArtifactOverlays(surface)
   const minimapEnabled = shouldRenderCanvasMinimap(surface)
@@ -548,6 +576,11 @@ export function CanvasViewport({
       const hitId = hitTest(doc, canvas.x, canvas.y)
       if (!hitId) return
       const shape = doc.objects[hitId]
+      if (shouldToggleHtmlFrameInteractiveOnDoubleClick(surface, shape)) {
+        useCanvasSelectionStore.getState().select([hitId])
+        toggleHtmlFrameInteractive(hitId)
+        return
+      }
       if (shape?.type === 'text') {
         useCanvasSelectionStore.getState().select([hitId])
         useCanvasSelectionStore.getState().setEditing(hitId)
@@ -560,7 +593,7 @@ export function CanvasViewport({
         useImageAnnotationStore.getState().openImageAnnotation(hitId)
       }
     },
-    [screenToCanvas, surface]
+    [screenToCanvas, surface, toggleHtmlFrameInteractive]
   )
 
   const onWheel = useCallback(
@@ -707,13 +740,6 @@ export function CanvasViewport({
               </g>
 
               <g id="overlay-layer">
-                {designArtifactOverlaysEnabled ? (
-                  <PrototypeFlowOverlay
-                    artifacts={designArtifacts}
-                    objects={document.objects}
-                    zoom={zoom}
-                  />
-                ) : null}
                 <SelectionOverlay
                   selectedIds={selectedIds}
                   hoverTargetId={hoverTargetId}
@@ -729,10 +755,29 @@ export function CanvasViewport({
           {designArtifactOverlaysEnabled ? (
             <HtmlFrameOverlay
               workspaceRoot={workspaceRoot}
+              interactiveId={interactiveHtmlFrameId}
+              editingId={editingHtmlFrameId}
+              onToggleInteractive={toggleHtmlFrameInteractive}
+              onToggleModify={toggleHtmlFrameModify}
               onUseElementAsContext={onUseElementAsContext}
               onRuntimeQualityFindings={onRuntimeQualityFindings}
               onRequestQualityRepair={onRequestQualityRepair}
             />
+          ) : null}
+          {designArtifactOverlaysEnabled && docLoaded && root ? (
+            <svg
+              className="pointer-events-none absolute inset-0 z-10 h-full w-full"
+              viewBox={viewBoxStr}
+              xmlns="http://www.w3.org/2000/svg"
+              aria-hidden="true"
+              focusable="false"
+            >
+              <PrototypeFlowOverlay
+                artifacts={designArtifacts}
+                objects={document.objects}
+                zoom={zoom}
+              />
+            </svg>
           ) : null}
         </div>
         {designArtifactOverlaysEnabled ? (

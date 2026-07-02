@@ -54,10 +54,12 @@ describe('computePrototypeFlowEdges', () => {
         targetTitle: 'Signup',
         label: 'Start trial',
         href: '../signup/v1.html',
-        x1: 640,
+        x1: 1280,
         y1: 400,
-        x2: 2140,
-        y2: 400
+        x2: 1500,
+        y2: 400,
+        controlX: 1390,
+        controlY: -96
       }),
       expect.objectContaining({
         sourceArtifactId: 'signup',
@@ -65,10 +67,12 @@ describe('computePrototypeFlowEdges', () => {
         sourceTitle: 'Signup',
         targetTitle: 'Home',
         href: '../home/v1.html',
-        x1: 2140,
+        x1: 1500,
         y1: 400,
-        x2: 640,
-        y2: 400
+        x2: 1280,
+        y2: 400,
+        controlX: 1390,
+        controlY: 896
       })
     ]))
   })
@@ -149,5 +153,38 @@ describe('computePrototypeFlowEdges', () => {
       '../home/v1.html',
       '../checkout/v1.html'
     ])
+  })
+
+  it('routes skipped horizontal links through an outside lane instead of frame centers', () => {
+    const doc = createEmptyDocument()
+    const homeFrame = createHtmlFrameShape('Home', 0, 0, 'home', 'desktop')
+    const settingsFrame = createHtmlFrameShape('Settings', 1500, 0, 'settings', 'desktop')
+    const checkoutFrame = createHtmlFrameShape('Checkout', 3000, 0, 'checkout', 'desktop')
+    doc.objects[homeFrame.id] = { ...homeFrame, parentId: doc.rootId }
+    doc.objects[settingsFrame.id] = { ...settingsFrame, parentId: doc.rootId }
+    doc.objects[checkoutFrame.id] = { ...checkoutFrame, parentId: doc.rootId }
+    doc.objects[doc.rootId] = {
+      ...doc.objects[doc.rootId],
+      children: [homeFrame.id, settingsFrame.id, checkoutFrame.id]
+    }
+
+    const edges = computePrototypeFlowEdges(
+      [
+        artifact('home', 'Home', { prototypeLinks: [{ targetTitle: 'Checkout', targetArtifactId: 'checkout' }] }),
+        artifact('settings', 'Settings'),
+        artifact('checkout', 'Checkout')
+      ],
+      doc.objects
+    )
+
+    const skippedEdge = edges.find((edge) => edge.sourceArtifactId === 'home' && edge.targetArtifactId === 'checkout')
+    expect(skippedEdge).toEqual(expect.objectContaining({
+      x1: 1280,
+      y1: 400,
+      x2: 3000,
+      y2: 400,
+      controlX: 2140,
+      controlY: -96
+    }))
   })
 })
