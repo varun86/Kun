@@ -5,7 +5,10 @@ import { useCanvasViewportStore } from '../../../design/canvas/canvas-viewport-s
 import { useCanvasSelectionStore } from '../../../design/canvas/canvas-selection-store'
 import { isHtmlFrame, type CanvasShape } from '../../../design/canvas/canvas-types'
 import type { DesignHtmlElementContext } from '../../../design/design-composer-context'
-import { startDesignHtmlPreviewWatch } from '../../../design/design-preview-file'
+import {
+  startDesignHtmlPreviewWatch,
+  type DesignPreviewRenderState
+} from '../../../design/design-preview-file'
 import {
   inferDesignArtifactFoundationRole,
   type DesignArtifactFoundationRole
@@ -232,12 +235,18 @@ function qualityFindingLabel(severity: DesignHtmlQualityFinding['severity']): st
   return 'note'
 }
 
-export function shouldRenderHtmlFrameWebview(fileUrl: string): boolean {
-  // Mount as soon as an authorized file URL exists, even while it still holds the
-  // skeleton. The skeleton is a self-contained "Generating…" page, so mounting
-  // early lets the agent's first real write paint live (the webview navigates in
-  // place) instead of waiting behind a placeholder until the skeleton is replaced.
-  return Boolean(fileUrl)
+export function shouldRenderHtmlFrameWebview({
+  fileUrl,
+  previewState,
+  hasRenderableContent
+}: {
+  fileUrl: string
+  previewState: DesignPreviewRenderState
+  hasRenderableContent: boolean
+}): boolean {
+  if (!fileUrl) return false
+  if (hasRenderableContent) return true
+  return previewState === 'skeleton'
 }
 
 export function htmlFrameOverlayPointerEvents({
@@ -383,7 +392,8 @@ function ScreenOverlayInner({
   const [fileUrl, setFileUrl] = useState('')
   const [revision, setRevision] = useState(0)
   const [previewError, setPreviewError] = useState('')
-  const [skeletonPreview, setSkeletonPreview] = useState(false)
+  const [previewState, setPreviewState] = useState<DesignPreviewRenderState>('transient')
+  const [hasRenderablePreview, setHasRenderablePreview] = useState(false)
   const [selectedElementRect, setSelectedElementRect] = useState<{
     left: number
     top: number
@@ -462,7 +472,8 @@ function ScreenOverlayInner({
     setFileUrl('')
     setRevision(0)
     setPreviewError('')
-    setSkeletonPreview(artifact?.previewStatus === 'pending')
+    setPreviewState('transient')
+    setHasRenderablePreview(false)
     if (!artifactRelativePath || artifactKind !== 'html' || !workspaceRoot) return
     if (typeof window.kunGui?.authorizeWritePrototype !== 'function') return
 
@@ -488,14 +499,12 @@ function ScreenOverlayInner({
                 setPreviewError('')
                 setRevision(nextRevision)
               },
-              onSkeletonChange: (isSkeleton) => {
+              onPreviewStateChange: (state) => {
                 if (cancelled) return
-                // Only flip the skeleton gate here. Marking the preview "ready" the
-                // instant the skeleton is replaced ended the transparent generating
-                // surface mid-stream, exposing a white frame band under the partial
-                // page. The turn-settled effect below promotes to "ready" once the
-                // agent actually stops writing (chat no longer busy).
-                setSkeletonPreview(isSkeleton)
+                setPreviewState(state)
+                if (state === 'renderable') {
+                  setHasRenderablePreview(true)
+                }
               },
               onError: reportError
             })
@@ -743,16 +752,20 @@ function ScreenOverlayInner({
   )
 
   // Promote a pending preview to "ready" only once the turn has settled: the file
-  // holds real (non-skeleton) HTML and the agent is no longer streaming. This keeps
-  // the transparent generating surface up for the whole write so the canvas updates
-  // live without an opaque white frame appearing mid-stream.
+  // holds a complete standalone HTML document and the agent is no longer streaming.
+  // This keeps the transparent generating surface up for the whole write so the
+  // canvas updates live without an opaque white frame appearing mid-stream.
   useEffect(() => {
     if (!artifact?.id || artifact.previewStatus !== 'pending') return
-    if (skeletonPreview || drawingActive) return
+    if (previewState !== 'renderable' || drawingActive) return
     setArtifactPreviewStatus(artifact.id, 'ready')
-  }, [artifact?.id, artifact?.previewStatus, skeletonPreview, drawingActive, setArtifactPreviewStatus])
+  }, [artifact?.id, artifact?.previewStatus, previewState, drawingActive, setArtifactPreviewStatus])
 
-  const webviewUrl = shouldRenderHtmlFrameWebview(fileUrl)
+  const webviewUrl = shouldRenderHtmlFrameWebview({
+    fileUrl,
+    previewState,
+    hasRenderableContent: hasRenderablePreview
+  })
     ? `${fileUrl}${fileUrl.includes('?') ? '&' : '?'}rev=${revision}`
     : ''
 
@@ -970,7 +983,8 @@ function ScreenOverlayInner({
   const frameRadius = Math.min(7, Math.max(3, screenWidth * 0.012))
   const chromeOffset = Math.min(28, Math.max(18, screenWidth * 0.045))
   const showChrome = screenWidth > 92 && screenHeight > 42
-  const transparentGeneratingSurface = skeletonPreview || drawingActive
+  const placeholderPreview = !hasRenderablePreview && previewState !== 'renderable'
+  const transparentGeneratingSurface = placeholderPreview || drawingActive
   const visualCanvasHeight = htmlFrameVisualCanvasHeight(
     canvasHeight,
     measuredContentSize?.height ?? null
@@ -1195,7 +1209,7 @@ function ScreenOverlayInner({
                 }
                 style={{ fontSize: Math.min(16, Math.max(12, canvasWidth * 0.018)) }}
               >
-                {drawingActive || skeletonPreview ? (
+                {drawingActive || placeholderPreview ? (
                   <Brush
                     className="h-5 w-5 animate-pulse text-accent"
                     strokeWidth={1.8}

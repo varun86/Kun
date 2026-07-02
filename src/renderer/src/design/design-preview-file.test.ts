@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { WorkspaceFileChangePayload, WorkspaceFileWatchResult } from '@shared/workspace-file'
 import {
   buildDesignPreviewSkeleton,
+  designPreviewRenderState,
   isDesignPreviewSkeleton,
   prepareDesignPreviewFile,
   startDesignHtmlPreviewWatch
@@ -35,6 +36,13 @@ describe('design preview file helpers', () => {
   it('recognizes only Kun preview skeleton content', () => {
     expect(isDesignPreviewSkeleton(buildDesignPreviewSkeleton('.kun-design/new/v1.html'))).toBe(true)
     expect(isDesignPreviewSkeleton('<!doctype html><html><body><h1>Real page</h1></body></html>')).toBe(false)
+  })
+
+  it('classifies skeleton, stable HTML, and transient partial writes separately', () => {
+    expect(designPreviewRenderState(buildDesignPreviewSkeleton('.kun-design/new/v1.html'))).toBe('skeleton')
+    expect(designPreviewRenderState('<!doctype html><html><body><h1>Real page</h1></body></html>')).toBe('renderable')
+    expect(designPreviewRenderState('<!doctype html><html><body><h1>Half written')).toBe('transient')
+    expect(designPreviewRenderState('```html\n<html><body>oops')).toBe('transient')
   })
 
   it('creates a visible skeleton for a new HTML turn before sending', async () => {
@@ -159,6 +167,56 @@ describe('design preview file helpers', () => {
     expect(api.unwatchWorkspaceFile).toHaveBeenCalledWith('watch-1')
   })
 
+  it('does not bump revision when the initial watched file is only a transient partial HTML', async () => {
+    const { api, emit, off } = createWatchApi({
+      ok: true,
+      watchId: 'watch-1',
+      path: '/workspace/.kun-design/screen/v1.html',
+      content: '<!doctype html><html><body><main><h1>Loading',
+      size: 44,
+      truncated: false,
+      startedAt: '2026-06-21T00:00:00.000Z'
+    })
+    const onRevision = vi.fn()
+    const onSkeletonChange = vi.fn()
+    const onPreviewStateChange = vi.fn()
+    const dispose = startDesignHtmlPreviewWatch({
+      api,
+      workspaceRoot: '/workspace',
+      path: '.kun-design/screen/v1.html',
+      onRevision,
+      onSkeletonChange,
+      onPreviewStateChange,
+      onError: vi.fn(),
+      revisionDebounceMs: 0
+    })
+    await flushPromises()
+
+    expect(onRevision).not.toHaveBeenCalled()
+    expect(onSkeletonChange).toHaveBeenCalledWith(true)
+    expect(onPreviewStateChange).toHaveBeenCalledWith('transient')
+
+    emit({
+      ok: true,
+      watchId: 'watch-1',
+      workspaceRoot: '/workspace',
+      path: '/workspace/.kun-design/screen/v1.html',
+      content: '<!doctype html><html><body><main><h1>Done</h1></main></body></html>',
+      size: 70,
+      truncated: false,
+      changedAt: '2026-06-21T00:00:02.000Z'
+    })
+
+    expect(onRevision).toHaveBeenCalledTimes(1)
+    expect(onRevision).toHaveBeenNthCalledWith(1, 1)
+    expect(onSkeletonChange).toHaveBeenLastCalledWith(false)
+    expect(onPreviewStateChange).toHaveBeenLastCalledWith('renderable')
+
+    dispose()
+    expect(off).toHaveBeenCalled()
+    expect(api.unwatchWorkspaceFile).toHaveBeenCalledWith('watch-1')
+  })
+
   it('coalesces rapid streaming writes into a single debounced revision bump', async () => {
     vi.useFakeTimers()
     try {
@@ -188,27 +246,28 @@ describe('design preview file helpers', () => {
       expect(onRevision).toHaveBeenCalledTimes(1)
       expect(onRevision).toHaveBeenNthCalledWith(1, 1)
 
-      const emitWrite = (chunk: string): void =>
+      const emitWrite = (content: string): void =>
         emit({
           ok: true,
           watchId: 'watch-1',
           workspaceRoot: '/workspace',
           path: '/workspace/.kun-design/screen/v1.html',
-          content: `<html><body>${chunk}</body></html>`,
-          size: chunk.length,
+          content,
+          size: content.length,
           truncated: false,
           changedAt: '2026-06-21T00:00:01.000Z'
         })
 
-      emitWrite('a')
-      emitWrite('ab')
-      emitWrite('abc')
+      emitWrite('<!doctype html><html><body><main>')
+      emitWrite('<!doctype html><html><body><main><h1>Almost</h1>')
 
-      // Skeleton state is reported immediately for every write so the webview can
-      // mount as soon as real HTML lands, even before the revision bump fires.
-      expect(onSkeletonChange).toHaveBeenLastCalledWith(false)
-      // No extra revision bump until the debounce window elapses.
+      // Partial writes keep the placeholder treatment active and must not trigger
+      // a reload into a half-written document.
+      expect(onSkeletonChange).toHaveBeenLastCalledWith(true)
       expect(onRevision).toHaveBeenCalledTimes(1)
+
+      emitWrite('<!doctype html><html><body><main><h1>Ready</h1></main></body></html>')
+      expect(onSkeletonChange).toHaveBeenLastCalledWith(false)
 
       vi.advanceTimersByTime(200)
       expect(onRevision).toHaveBeenCalledTimes(2)

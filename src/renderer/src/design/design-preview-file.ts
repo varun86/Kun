@@ -28,7 +28,14 @@ export type StartDesignHtmlPreviewWatchOptions = {
   workspaceRoot: string
   path: string
   onRevision: (revision: number) => void
-  onSkeletonChange?: (isSkeleton: boolean) => void
+  /**
+   * Legacy boolean signal consumed by preview surfaces: true keeps the
+   * placeholder/"generating" treatment active, false means the current file is a
+   * safe standalone HTML document to paint.
+   */
+  onSkeletonChange?: (shouldHoldPlaceholder: boolean) => void
+  /** Richer content-state signal for surfaces that need to distinguish skeleton vs transient partial HTML. */
+  onPreviewStateChange?: (state: DesignPreviewRenderState) => void
   onError: (message: string) => void
   /**
    * Debounce window (ms) applied to revision bumps from file-change events. The
@@ -42,6 +49,9 @@ const DEFAULT_REVISION_DEBOUNCE_MS = 200
 
 const SKELETON_TITLE = '<title>Generating design preview</title>'
 const SKELETON_MARKER = 'Kun is preparing a live preview'
+const HTML_CODE_FENCE_RE = /^```/
+const HTML_SHELL_OPEN_RE = /<!doctype\s+html\b|<html[\s>]|<body[\s>]/i
+const HTML_SHELL_CLOSE_RE = /<\/html\s*>|<\/body\s*>/i
 
 const SKELETON_STYLE = `
     :root {
@@ -142,6 +152,21 @@ const SKELETON_STYLE = `
 
 export function isDesignPreviewSkeleton(content: string): boolean {
   return content.includes(SKELETON_TITLE) && content.includes(SKELETON_MARKER)
+}
+
+export type DesignPreviewRenderState = 'skeleton' | 'renderable' | 'transient'
+
+function looksLikeRenderableStandaloneHtml(content: string): boolean {
+  const trimmed = content.trim()
+  if (!trimmed) return false
+  if (HTML_CODE_FENCE_RE.test(trimmed)) return false
+  if (!HTML_SHELL_OPEN_RE.test(trimmed)) return false
+  return HTML_SHELL_CLOSE_RE.test(trimmed)
+}
+
+export function designPreviewRenderState(content: string): DesignPreviewRenderState {
+  if (isDesignPreviewSkeleton(content)) return 'skeleton'
+  return looksLikeRenderableStandaloneHtml(content) ? 'renderable' : 'transient'
 }
 
 function currentPrepareApi(api?: DesignPreviewPrepareApi): DesignPreviewPrepareApi | undefined {
@@ -254,17 +279,20 @@ export function startDesignHtmlPreviewWatch(options: StartDesignHtmlPreviewWatch
     }, debounceMs)
   }
 
-  const reportContentState = (content: string): void => {
-    options.onSkeletonChange?.(isDesignPreviewSkeleton(content))
+  const reportContentState = (content: string): DesignPreviewRenderState => {
+    const state = designPreviewRenderState(content)
+    options.onSkeletonChange?.(state !== 'renderable')
+    options.onPreviewStateChange?.(state)
+    return state
   }
 
   const offChanged = api.onWorkspaceFileChanged((payload) => {
     if (!watchId || payload.watchId !== watchId) return
     if (payload.ok) {
       // Report skeleton state immediately so the webview can mount as soon as the
-      // first real HTML lands, but debounce the reload-triggering revision bump.
-      reportContentState(payload.content)
-      scheduleBumpRevision()
+      // first SAFE real HTML lands, but debounce the reload-triggering revision bump.
+      const state = reportContentState(payload.content)
+      if (state === 'renderable') scheduleBumpRevision()
       return
     }
     options.onError(payload.message)
@@ -285,8 +313,8 @@ export function startDesignHtmlPreviewWatch(options: StartDesignHtmlPreviewWatch
         return
       }
       watchId = result.watchId
-      reportContentState(result.content)
-      bumpRevision()
+      const state = reportContentState(result.content)
+      if (state !== 'transient') bumpRevision()
     })
     .catch((error: unknown) => {
       if (!cancelled) options.onError(error instanceof Error ? error.message : String(error))

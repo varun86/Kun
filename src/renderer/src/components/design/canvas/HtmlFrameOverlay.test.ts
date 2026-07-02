@@ -116,12 +116,36 @@ function runContentSizeQuery(body: FakeHTMLElement): {
 }
 
 describe('HtmlFrameOverlay preview gating', () => {
-  it('mounts the webview as soon as an authorized file URL exists (even on the skeleton)', () => {
-    expect(shouldRenderHtmlFrameWebview('file:///workspace/.kun-design/screen/v1.html')).toBe(true)
+  it('mounts the webview for skeleton placeholders before the first stable HTML lands', () => {
+    expect(shouldRenderHtmlFrameWebview({
+      fileUrl: 'file:///workspace/.kun-design/screen/v1.html',
+      previewState: 'skeleton',
+      hasRenderableContent: false
+    })).toBe(true)
   })
 
   it('does not mount a webview without an authorized file URL', () => {
-    expect(shouldRenderHtmlFrameWebview('')).toBe(false)
+    expect(shouldRenderHtmlFrameWebview({
+      fileUrl: '',
+      previewState: 'skeleton',
+      hasRenderableContent: false
+    })).toBe(false)
+  })
+
+  it('keeps transient partial HTML off-screen until the first renderable revision exists', () => {
+    expect(shouldRenderHtmlFrameWebview({
+      fileUrl: 'file:///workspace/.kun-design/screen/v1.html',
+      previewState: 'transient',
+      hasRenderableContent: false
+    })).toBe(false)
+  })
+
+  it('keeps showing the last good preview while later writes are transient', () => {
+    expect(shouldRenderHtmlFrameWebview({
+      fileUrl: 'file:///workspace/.kun-design/screen/v1.html',
+      previewState: 'transient',
+      hasRenderableContent: true
+    })).toBe(true)
   })
 })
 
