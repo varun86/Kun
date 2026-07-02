@@ -268,13 +268,85 @@ describe('Image gen tool provider', () => {
     })
     expect(JSON.parse(requests[0].body)).toMatchObject({
       model: 'gpt-5.5',
-      input: [{ role: 'user', content: [{ type: 'input_text', text: 'tiny square' }] }],
-      instructions: 'You are an image generation assistant.',
-      tools: [{ type: 'image_generation', model: 'gpt-image-2', size: '1024x1024' }],
-      tool_choice: { type: 'image_generation' },
+      input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'tiny square' }] }],
+      instructions: 'You must fulfill image generation requests by using the image_generation tool.',
+      tools: [{
+        type: 'image_generation',
+        action: 'generate',
+        model: 'gpt-image-2',
+        quality: 'auto',
+        output_format: 'png',
+        background: 'opaque',
+        partial_images: 1,
+        size: '1024x1024'
+      }],
+      tool_choice: {
+        type: 'allowed_tools',
+        mode: 'required',
+        tools: [{ type: 'image_generation' }]
+      },
       stream: true,
       store: false
     })
+  })
+
+  it('uses the latest Codex partial image when the final image item is absent', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response([
+      `data: ${JSON.stringify({
+        type: 'response.image_generation_call.partial_image',
+        partial_image_b64: png(8, 8).toString('base64')
+      })}`,
+      `data: ${JSON.stringify({
+        type: 'response.completed',
+        response: { status: 'completed', output: [] }
+      })}`,
+      'data: [DONE]'
+    ].join('\n\n'), {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' }
+    })))
+    const client = new CodexResponsesImageClient('https://chatgpt.com/backend-api/codex', 'codex-access')
+
+    const image = await client.generate({
+      prompt: 'tiny square',
+      model: 'gpt-image-2',
+      timeoutMs: 1_000,
+      signal: new AbortController().signal
+    })
+
+    expect(image).toMatchObject({ mimeType: 'image/png' })
+    expect(image.data.byteLength).toBeGreaterThan(0)
+  })
+
+  it('summarizes Codex responses that complete without image data', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response([
+      `data: ${JSON.stringify({
+        type: 'response.output_text.delta',
+        delta: 'I can help with that.'
+      })}`,
+      `data: ${JSON.stringify({
+        type: 'response.completed',
+        response: {
+          status: 'completed',
+          output: [{
+            type: 'message',
+            content: [{ type: 'output_text', text: 'I can help with that.' }]
+          }]
+        }
+      })}`,
+      'data: [DONE]'
+    ].join('\n\n'), {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' }
+    })))
+    const client = new CodexResponsesImageClient('https://chatgpt.com/backend-api/codex', 'codex-access')
+
+    await expect(client.generate({
+      prompt: 'tiny square',
+      model: 'gpt-image-2',
+      timeoutMs: 1_000,
+      signal: new AbortController().signal
+    })).rejects.toThrow(/events: response\.output_text\.delta, response\.completed; output: message; text: I can help with that/)
   })
 
   it('generates an image, saves it to the workspace, and scopes the attachment', async () => {

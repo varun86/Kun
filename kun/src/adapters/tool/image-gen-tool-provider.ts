@@ -15,10 +15,12 @@ const SIZE_TIERS: Record<string, number> = { '1K': 1024, '2K': 2048 }
 const SIZE_STEP = 64
 const MIN_EDGE = 256
 const CODEX_IMAGE_RESPONSES_MODEL = 'gpt-5.5'
-const CODEX_IMAGE_INSTRUCTIONS = 'You are an image generation assistant.'
+const CODEX_IMAGE_INSTRUCTIONS = 'You must fulfill image generation requests by using the image_generation tool.'
 const MAX_CODEX_IMAGE_SSE_BYTES = 64 * 1024 * 1024
 const MAX_CODEX_IMAGE_SSE_EVENTS = 512
 const MAX_CODEX_IMAGE_BASE64_CHARS = 64 * 1024 * 1024
+
+type CodexImageToolChoiceMode = 'allowed_tools' | 'required' | 'none'
 
 export type GeneratedImage = { data: Buffer; mimeType: string }
 
@@ -379,6 +381,7 @@ async function collectReferenceImages(
 type ImagesApiPayload = { data?: { b64_json?: string; url?: string }[] }
 type CodexResponsesImageEvent = {
   type?: string
+  partial_image_b64?: string
   item?: {
     type?: string
     result?: string
@@ -527,6 +530,49 @@ function codexImageFromResult(result: string | undefined): GeneratedImage | null
   return { data: decodeCodexImagePayload(result), mimeType: 'image/png' }
 }
 
+function codexResponseOutputText(event: CodexResponsesImageEvent): string {
+  const output = event.response?.output ?? []
+  const parts: string[] = []
+  for (const item of output) {
+    const record = item as Record<string, unknown>
+    const content = record.content
+    if (!Array.isArray(content)) continue
+    for (const entry of content) {
+      if (!entry || typeof entry !== 'object') continue
+      const text = (entry as Record<string, unknown>).text
+      if (typeof text === 'string' && text.trim()) parts.push(text.trim())
+    }
+  }
+  return parts.join(' ').replace(/\s+/g, ' ').slice(0, 300)
+}
+
+function summarizeCodexResponsesImage(body: string): string {
+  try {
+    const events = parseCodexResponsesImageEvents(body)
+    const types = [...new Set(events.map((event) => event.type).filter((type): type is string => Boolean(type)))]
+      .slice(0, 8)
+      .join(', ')
+    const completed = events.find((event) => event.type === 'response.completed')
+    const outputTypes = [...new Set((completed?.response?.output ?? []).map((item) => item.type).filter(Boolean))]
+      .slice(0, 8)
+      .join(', ')
+    const text = completed ? codexResponseOutputText(completed) : ''
+    const parts = [
+      types ? `events: ${types}` : '',
+      outputTypes ? `output: ${outputTypes}` : '',
+      text ? `text: ${text}` : ''
+    ].filter(Boolean)
+    return parts.length > 0 ? ` (${parts.join('; ')})` : ''
+  } catch {
+    return ''
+  }
+}
+
+function isCodexToolChoiceError(status: number, body: string): boolean {
+  if (status !== 400) return false
+  return /tool[_ ]choice|allowed_tools|image_generation.*tools|tools.*image_generation/i.test(body)
+}
+
 function extractCodexResponsesImage(body: string): GeneratedImage | null {
   const events = parseCodexResponsesImageEvents(body)
   const failure = events.find((event) => event.type === 'response.failed' || event.type === 'error')
@@ -547,13 +593,19 @@ function extractCodexResponsesImage(body: string): GeneratedImage | null {
     }
   }
 
+  let latestPartial: GeneratedImage | null = null
+  for (const event of events) {
+    if (event.type !== 'response.image_generation_call.partial_image') continue
+    latestPartial = codexImageFromResult(event.partial_image_b64) ?? latestPartial
+  }
+
   const completed = events.find((event) => event.type === 'response.completed')
   for (const item of completed?.response?.output ?? []) {
     if (item.type !== 'image_generation_call') continue
     const image = codexImageFromResult(item.result)
     if (image) return image
   }
-  return null
+  return latestPartial
 }
 
 export class OpenAiCompatImageClient implements ImageGenClient {
@@ -681,10 +733,11 @@ export class CodexResponsesImageClient implements ImageGenClient {
     inputImages: { name: string; mimeType: string; data: Buffer }[]
   ): Promise<GeneratedImage> {
     const signal = withTimeout(request.signal, request.timeoutMs)
-    const body = JSON.stringify({
+    const buildBody = (toolChoiceMode: CodexImageToolChoiceMode) => JSON.stringify({
       model: CODEX_IMAGE_RESPONSES_MODEL,
       input: [
         {
+          type: 'message',
           role: 'user',
           content: [
             { type: 'input_text', text: request.prompt },
@@ -700,35 +753,64 @@ export class CodexResponsesImageClient implements ImageGenClient {
       tools: [
         {
           type: 'image_generation',
+          action: 'generate',
           model: request.model,
+          quality: 'auto',
+          output_format: 'png',
+          background: 'opaque',
+          partial_images: 1,
           ...(request.size ? { size: request.size } : {})
         }
       ],
-      tool_choice: { type: 'image_generation' },
+      ...(toolChoiceMode === 'allowed_tools'
+        ? {
+            tool_choice: {
+              type: 'allowed_tools',
+              mode: 'required',
+              tools: [{ type: 'image_generation' }]
+            }
+          }
+        : toolChoiceMode === 'required'
+          ? { tool_choice: 'required' }
+          : {}),
       stream: true,
       store: false
     })
-    let response: Response
-    try {
-      response = await fetch(this.endpointUrl, {
-        method: 'POST',
-        headers: {
-          ...this.headers,
-          Authorization: `Bearer ${this.apiKey}`,
-          Accept: 'text/event-stream',
-          'Content-Type': 'application/json'
-        },
-        body,
-        signal
-      })
-    } catch (error) {
-      throw imageFetchFailure(this.endpointUrl, error, request)
+
+    let lastHttpError: ImageGenHttpError | null = null
+    let lastEmptyResponse = ''
+    for (const mode of ['allowed_tools', 'required', 'none'] satisfies CodexImageToolChoiceMode[]) {
+      let response: Response
+      try {
+        response = await fetch(this.endpointUrl, {
+          method: 'POST',
+          headers: {
+            ...this.headers,
+            Authorization: `Bearer ${this.apiKey}`,
+            Accept: 'text/event-stream',
+            'Content-Type': 'application/json'
+          },
+          body: buildBody(mode),
+          signal
+        })
+      } catch (error) {
+        throw imageFetchFailure(this.endpointUrl, error, request)
+      }
+      const text = await readLimitedResponseText(response, MAX_CODEX_IMAGE_SSE_BYTES)
+      if (!response.ok) {
+        const error = new ImageGenHttpError(response.status, text)
+        lastHttpError = error
+        if (isCodexToolChoiceError(response.status, text)) continue
+        throw error
+      }
+      const image = extractCodexResponsesImage(text)
+      if (image) return image
+      lastEmptyResponse = `Codex image provider returned no image data${summarizeCodexResponsesImage(text)}`
+      if (mode !== 'none') continue
     }
-    const text = await readLimitedResponseText(response, MAX_CODEX_IMAGE_SSE_BYTES)
-    if (!response.ok) throw new ImageGenHttpError(response.status, text)
-    const image = extractCodexResponsesImage(text)
-    if (!image) throw new Error('Codex image provider returned no image data')
-    return image
+    if (lastEmptyResponse) throw new Error(lastEmptyResponse)
+    if (lastHttpError) throw lastHttpError
+    throw new Error('Codex image provider returned no image data')
   }
 }
 

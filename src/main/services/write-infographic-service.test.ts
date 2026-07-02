@@ -173,7 +173,17 @@ describe('write infographic service', () => {
     })
     expect(JSON.parse(requests[0].body).tools[0]).toMatchObject({
       type: 'image_generation',
+      action: 'generate',
+      quality: 'auto',
+      output_format: 'png',
+      background: 'opaque',
+      partial_images: 1,
       model: 'gpt-image-2'
+    })
+    expect(JSON.parse(requests[0].body).tool_choice).toMatchObject({
+      type: 'allowed_tools',
+      mode: 'required',
+      tools: [{ type: 'image_generation' }]
     })
   })
 
