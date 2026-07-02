@@ -3,15 +3,21 @@ import { FileInput, Settings2, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { DESIGN_SYSTEM_PRESETS, type DesignSystemPreset } from '@shared/app-settings'
 import { useDesignWorkspaceStore } from '../../design/design-workspace-store'
-import { DESIGN_SYSTEM_DISPLAY, DESIGN_TONE_OPTIONS } from '../../design/design-context'
+import {
+  DESIGN_SYSTEM_DISPLAY,
+  DESIGN_TONE_OPTIONS,
+  type DesignContext
+} from '../../design/design-context'
 import { importStitchDesignMarkdown, STITCH_DESIGN_MD_PATH } from '../../design/design-md-compat'
 import { useDesignSystemStore } from '../../design/canvas/design-system-store'
+import { DesignTargetToggle } from './DesignTargetToggle'
 
 type Props = {
   open: boolean
   onClose: () => void
   onOpenSettings?: () => void
   titleKey?: string
+  designTargetDisabled?: boolean
 }
 
 const HEX_RE = /^#[0-9a-fA-F]{6}$/
@@ -32,6 +38,16 @@ const fieldLabel = 'mb-1 block text-[11px] font-medium uppercase tracking-wide t
 const fieldInput =
   'w-full rounded-md border border-[var(--ds-sidebar-row-ring)] bg-transparent px-2 py-1 text-[13px] text-[#1f2733] outline-none focus-visible:border-[#3b82d8] dark:text-white/85'
 
+export function designContextPatchForTargetLock(
+  patch: Partial<DesignContext>,
+  designTargetLocked: boolean
+): Partial<DesignContext> {
+  if (!designTargetLocked || !patch.designTarget) return patch
+  const nextPatch = { ...patch }
+  delete nextPatch.designTarget
+  return nextPatch
+}
+
 /**
  * Popover surface for the design-context form (brand color / tone / system).
  * Replaces the permanent right-column form so the canvas can claim the full
@@ -41,11 +57,14 @@ export function DesignContextPopover({
   open,
   onClose,
   onOpenSettings,
-  titleKey = 'designContextLabel'
+  titleKey = 'designContextLabel',
+  designTargetDisabled = false
 }: Props): ReactElement | null {
   const { t } = useTranslation('common')
   const workspaceRoot = useDesignWorkspaceStore((s) => s.workspaceRoot)
   const designContext = useDesignWorkspaceStore((s) => s.designContext)
+  const designTarget = useDesignWorkspaceStore((s) => s.designContext.designTarget ?? 'web')
+  const setDesignTarget = useDesignWorkspaceStore((s) => s.setDesignTarget)
   const updateDesignContext = useDesignWorkspaceStore((s) => s.updateDesignContext)
   const setFileError = useDesignWorkspaceStore((s) => s.setFileError)
   const rootRef = useRef<HTMLDivElement | null>(null)
@@ -99,7 +118,7 @@ export function DesignContextPopover({
           setFileError(t('designImportDesignMdFailed'))
           return
         }
-        updateDesignContext(imported.contextPatch)
+        updateDesignContext(designContextPatchForTargetLock(imported.contextPatch, designTargetDisabled))
         for (const token of imported.tokens) {
           useDesignSystemStore.getState().setToken(token)
         }
@@ -156,6 +175,15 @@ export function DesignContextPopover({
       </div>
 
       <div className="space-y-3">
+        <div>
+          <span className={fieldLabel}>{t('designTargetHint')}</span>
+          <DesignTargetToggle
+            designTarget={designTarget}
+            disabled={designTargetDisabled}
+            disabledReason={designTargetDisabled ? t('designTargetLockedHint') : undefined}
+            onChange={setDesignTarget}
+          />
+        </div>
         <label className="block">
           <span className={fieldLabel}>{t('designAgentBrandColor')}</span>
           <div className="flex items-center gap-2">

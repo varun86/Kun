@@ -36,7 +36,9 @@ import { useDesignSystemStore } from './design-system-store'
 import { resolveTokenPatch, type DesignToken, type TokenProp } from './design-system-types'
 import type { ComponentDef, ComponentOverrides, ComponentSlot } from './design-system-types'
 import { lintDesignSystem, setLastLintFindings } from './design-lint'
-import { applyDesignSystemTemplateOp } from './design-system-template'
+import { applyDesignSystemTemplateOp, type DesignSystemTemplateOp } from './design-system-template'
+import { defaultDevicePresetForDesignTarget } from '../design-context'
+import { useDesignWorkspaceStore } from '../design-workspace-store'
 
 const ShapeTypeSchema = z.enum([
   'rect',
@@ -430,7 +432,7 @@ export const ShapeOpSchema = z.discriminatedUnion('op', [
   }),
   z.object({
     op: z.literal('design-system-template'),
-    operation: z.enum(['create', 'update', 'apply']).default('create'),
+    operation: z.enum(['create', 'update', 'apply', 'validate']).default('create'),
     name: z.string().optional(),
     seedColor: z.string().optional(),
     mode: z.enum(['light', 'dark', 'both']).optional(),
@@ -460,7 +462,10 @@ export const ShapeOpSchema = z.discriminatedUnion('op', [
     height: z.number().positive().optional(),
     dryRun: z.boolean().optional()
   }),
-  z.object({ op: z.literal('lint-design-system') })
+  z.object({
+    op: z.literal('lint-design-system'),
+    targetIds: z.array(z.string()).optional()
+  })
 ])
 
 export type ShapeOp = z.infer<typeof ShapeOpSchema>
@@ -485,6 +490,13 @@ export type ExecuteResult = {
 export type ExecuteOpsOptions = {
   /** Select ids before the undo group closes so redo restores the post-op selection. */
   selectAfter?: (affectedIds: string[]) => string[]
+  /** One-shot lint findings key, used to keep Code sidebar feedback separate from Design mode. */
+  lintFeedbackKey?: string
+  /**
+   * Code-mode whiteboards do not own HTML screen artifacts. When a model still
+   * emits screen ops there, land them as normal editable frames instead.
+   */
+  screenFallback?: 'plain-frame'
 }
 
 function findShape(id: string): CanvasShape | null {
@@ -757,6 +769,24 @@ const DEVICE_DIMS: Record<DevicePreset, { width: number; height: number }> = {
   desktop: { width: 1280, height: 800 }
 }
 
+function defaultScreenDevicePreset(): DevicePreset {
+  return defaultDevicePresetForDesignTarget(
+    useDesignWorkspaceStore.getState().designContext.designTarget
+  ) as DevicePreset
+}
+
+function createScreenLikeShape(
+  name: string,
+  x: number,
+  y: number,
+  preset: DevicePreset,
+  artifactId: string | null
+): CanvasShape {
+  const shape = createHtmlFrameShape(name, x, y, artifactId ?? '__plain_frame__', preset)
+  if (!artifactId) delete shape.htmlArtifactId
+  return shape
+}
+
 function htmlFrameRects(): Rect[] {
   const doc = useCanvasShapeStore.getState().document
   return Object.values(doc.objects)
@@ -871,7 +901,12 @@ function responsiveReflowFrame(
   affectedIds.add(frameId)
 }
 
-function executeOne(op: ShapeOp, affectedIds: Set<string>, errors: OpError[]): void {
+function executeOne(
+  op: ShapeOp,
+  affectedIds: Set<string>,
+  errors: OpError[],
+  options: ExecuteOpsOptions = {}
+): void {
   const store = useCanvasShapeStore.getState()
   switch (op.op) {
     case 'add': {
@@ -1095,13 +1130,14 @@ function executeOne(op: ShapeOp, affectedIds: Set<string>, errors: OpError[]): v
     }
     case 'add-screen': {
       const factory = getScreenArtifactFactory()
+      const allowPlainFrame = options.screenFallback === 'plain-frame'
       const artifactId = factory?.(op.name) ?? null
-      if (!artifactId) {
+      if (!artifactId && !allowPlainFrame) {
         errors.push({ code: 'INVALID_OP', message: 'Cannot create screen artifact — no handler registered' })
         return
       }
-      const preset = (op.devicePreset ?? 'desktop') as DevicePreset
-      const centered = createHtmlFrameShape(op.name, 0, 0, artifactId, preset)
+      const preset = (op.devicePreset ?? defaultScreenDevicePreset()) as DevicePreset
+      const centered = createScreenLikeShape(op.name, 0, 0, preset, artifactId)
       const width = op.width ?? centered.width
       const height = op.height ?? centered.height
       const fallbackRect = placeRectInViewportAvoiding(
@@ -1109,19 +1145,19 @@ function executeOne(op: ShapeOp, affectedIds: Set<string>, errors: OpError[]): v
         useCanvasViewportStore.getState().vbox,
         htmlFrameRects()
       )
-      const shape = createHtmlFrameShape(
+      const shape = createScreenLikeShape(
         op.name,
         op.x ?? fallbackRect.x,
         op.y ?? fallbackRect.y,
-        artifactId,
-        preset
+        preset,
+        artifactId
       )
       if (op.width) shape.width = op.width
       if (op.height) shape.height = op.height
       store.addShape(shape)
       // Keep the agent's expanded brief so the follow-up HTML-generation turn
       // designs from it instead of the raw user prompt (see the turn-complete hook).
-      if (op.brief) setScreenBrief(shape.id, op.brief)
+      if (artifactId && op.brief) setScreenBrief(shape.id, op.brief)
       affectedIds.add(shape.id)
       break
     }
@@ -1442,13 +1478,14 @@ function executeOne(op: ShapeOp, affectedIds: Set<string>, errors: OpError[]): v
     }
     case 'add-screens': {
       const factory = getScreenArtifactFactory()
-      if (!factory) {
+      const allowPlainFrame = options.screenFallback === 'plain-frame'
+      if (!factory && !allowPlainFrame) {
         errors.push({ code: 'INVALID_OP', message: 'Cannot create screen artifacts — no handler registered' })
         return
       }
       const specs = op.specs.map((spec) => {
-        const preset = (spec.devicePreset ?? 'desktop') as DevicePreset
-        const base = createHtmlFrameShape(spec.name, 0, 0, '__pending__', preset)
+        const preset = (spec.devicePreset ?? defaultScreenDevicePreset()) as DevicePreset
+        const base = createScreenLikeShape(spec.name, 0, 0, preset, null)
         return {
           spec,
           preset,
@@ -1466,8 +1503,8 @@ function executeOne(op: ShapeOp, affectedIds: Set<string>, errors: OpError[]): v
       const placedRects: Rect[] = []
       for (let i = 0; i < specs.length; i += 1) {
         const { spec, preset, width, height } = specs[i]
-        const artifactId = factory(spec.name)
-        if (!artifactId) {
+        const artifactId = factory?.(spec.name) ?? null
+        if (!artifactId && !allowPlainFrame) {
           errors.push({ code: 'INVALID_OP', message: `Cannot create screen artifact for "${spec.name}"` })
           continue
         }
@@ -1478,12 +1515,12 @@ function executeOne(op: ShapeOp, affectedIds: Set<string>, errors: OpError[]): v
             : placeRectInViewportAvoiding({ width, height }, vbox, [...occupiedRects, ...placedRects])
         const x = spec.x ?? autoRect.x
         const y = spec.y ?? autoRect.y
-        const shape = createHtmlFrameShape(spec.name, x, y, artifactId, preset)
+        const shape = createScreenLikeShape(spec.name, x, y, preset, artifactId)
         shape.width = width
         shape.height = height
         store.addShape(shape)
         placedRects.push(shapeBounds(shape))
-        if (spec.brief) setScreenBrief(shape.id, spec.brief)
+        if (artifactId && spec.brief) setScreenBrief(shape.id, spec.brief)
         affectedIds.add(shape.id)
       }
       break
@@ -1672,7 +1709,18 @@ function executeOne(op: ShapeOp, affectedIds: Set<string>, errors: OpError[]): v
       break
     }
     case 'design-system-template': {
-      applyDesignSystemTemplateOp(op, affectedIds, errors)
+      if (op.operation === 'validate') {
+        setLastLintFindings(
+          lintDesignSystem(
+            useCanvasShapeStore.getState().document,
+            useDesignSystemStore.getState().system,
+            { scopeIds: op.targetIds }
+          ),
+          options?.lintFeedbackKey
+        )
+      } else {
+        applyDesignSystemTemplateOp(op as DesignSystemTemplateOp, affectedIds, errors)
+      }
       break
     }
     case 'lint-design-system': {
@@ -1680,8 +1728,10 @@ function executeOne(op: ShapeOp, affectedIds: Set<string>, errors: OpError[]): v
       setLastLintFindings(
         lintDesignSystem(
           useCanvasShapeStore.getState().document,
-          useDesignSystemStore.getState().system
-        )
+          useDesignSystemStore.getState().system,
+          { scopeIds: op.targetIds }
+        ),
+        options?.lintFeedbackKey
       )
       break
     }
@@ -1721,7 +1771,7 @@ export function executeOps(
 
   useCanvasUndoStore.getState().withGroup(label, () => {
     for (const op of validatedOps) {
-      executeOne(op, affectedIds, errors)
+      executeOne(op, affectedIds, errors, options)
     }
     const selectedAfter = options?.selectAfter?.(Array.from(affectedIds))
     if (selectedAfter) {

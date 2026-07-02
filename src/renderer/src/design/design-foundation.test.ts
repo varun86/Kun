@@ -51,6 +51,10 @@ describe('buildDesignSpecPrompt', () => {
 
   it('writes design.md first, then requires a parseable pages block', () => {
     expect(prompt).toContain('.kun-design/doc/design.md')
+    expect(prompt).toContain('Design target: Web')
+    expect(prompt).toContain('1280x800 desktop page frame')
+    expect(prompt).toContain('Web brief:')
+    expect(prompt).not.toContain('App idea:')
     expect(prompt).toContain('```pages')
     expect(prompt).toContain('REQUIRED')
     expect(prompt).toContain('State & responsiveness plan')
@@ -66,6 +70,21 @@ describe('buildDesignSpecPrompt', () => {
     expect(prompt).toContain('do NOT duplicate')
     expect(prompt).toContain('"Home"')
   })
+
+  it('plans app foundations around mobile app prototype screens', () => {
+    const appPrompt = buildDesignSpecPrompt({
+      brief: 'A habit tracker',
+      workspaceRoot: '/ws',
+      designMdPath: '.kun-design/doc/design.md',
+      designContext: { designTarget: 'app' }
+    })
+
+    expect(appPrompt).toContain('Design target: App')
+    expect(appPrompt).toContain('390x844 phone screens')
+    expect(appPrompt).toContain('primary touch action')
+    expect(appPrompt).toContain('App idea:')
+    expect(appPrompt).not.toContain('Web brief:')
+  })
 })
 
 describe('buildDesignSystemBoardPrompt', () => {
@@ -80,6 +99,7 @@ describe('buildDesignSystemBoardPrompt', () => {
   it('builds a visual style guide AND writes the shared token file', () => {
     expect(prompt).toContain('.kun-design/doc/sys/v1.html')
     expect(prompt).toContain(`Also WRITE \`${DESIGN_SYSTEM_MD_PATH}\``)
+    expect(prompt).toContain('Design-system target: Web')
     expect(prompt).toContain('#hex')
     expect(prompt).toContain('Design delivery checklist')
   })
@@ -92,6 +112,21 @@ describe('buildDesignSystemBoardPrompt', () => {
 
   it('points the agent at the design brief to honor', () => {
     expect(prompt).toContain('.kun-design/doc/design.md')
+  })
+
+  it('adapts the style-guide board to app targets', () => {
+    const appPrompt = buildDesignSystemBoardPrompt({
+      brief: 'A habit tracker',
+      workspaceRoot: '/ws',
+      artifactRelativePath: '.kun-design/doc/sys/v1.html',
+      designSystemMdPath: DESIGN_SYSTEM_MD_PATH,
+      designContext: { designTarget: 'app' }
+    })
+
+    expect(appPrompt).toContain('Design-system target: App')
+    expect(appPrompt).toContain('390x844 phone frame')
+    expect(appPrompt).toContain('bottom navigation/tabs')
+    expect(appPrompt).toContain('- Target: App')
   })
 })
 

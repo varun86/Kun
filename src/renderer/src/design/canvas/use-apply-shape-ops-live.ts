@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import type { ToolBlock } from '../../agent/types'
+import type { ChatBlock, ToolBlock } from '../../agent/types'
 import { useChatStore } from '../../store/chat-store'
 import { collectAssistantTextForTurn } from '../../store/chat-store-runtime-helpers'
 import {
@@ -12,12 +12,49 @@ import {
 import { useCanvasSelectionStore } from './canvas-selection-store'
 import { useCanvasShapeStore } from './canvas-shape-store'
 import { takeScreenBrief } from './screen-artifact-bridge'
-import type { OpError } from './shape-ops'
+import type { ExecuteOpsOptions, OpError } from './shape-ops'
 import { isHtmlFrame } from './canvas-types'
 import { useDesignAssistantStore } from '../design-assistant-store'
 
 /** Coalesce per-token `liveAssistant` deltas so we re-parse at most this often. */
 const STREAM_THROTTLE_MS = 120
+
+type ActiveCanvasTurnReplayState = {
+  activeThreadId?: string | null
+  currentTurnId: string | null
+  currentTurnUserId?: string | null
+  blocks: readonly ChatBlock[]
+}
+
+export function activeCanvasTurnMatchesThread(
+  state: Pick<ActiveCanvasTurnReplayState, 'activeThreadId'>,
+  targetThreadId?: string | null
+): boolean {
+  return !targetThreadId || state.activeThreadId === targetThreadId
+}
+
+function blocksForActiveCanvasTurn(state: ActiveCanvasTurnReplayState): readonly ChatBlock[] {
+  const startIndex = state.currentTurnUserId
+    ? state.blocks.findIndex((block) => block.kind === 'user' && block.id === state.currentTurnUserId)
+    : -1
+  if (startIndex < 0) return state.blocks
+  const endIndex = state.blocks.findIndex((block, index) => index > startIndex && block.kind === 'user')
+  return state.blocks.slice(startIndex + 1, endIndex >= 0 ? endIndex : undefined)
+}
+
+export function replayActiveCanvasTurn(
+  state: ActiveCanvasTurnReplayState,
+  applyToolBlock: (block: ToolBlock) => void,
+  processStreaming: () => void,
+  targetThreadId?: string | null
+): void {
+  if (!activeCanvasTurnMatchesThread(state, targetThreadId)) return
+  if (!state.currentTurnId) return
+  for (const block of blocksForActiveCanvasTurn(state)) {
+    if (block.kind === 'tool') applyToolBlock(block)
+  }
+  processStreaming()
+}
 
 /**
  * Apply the `design_canvas` / legacy ```shapeops``` blocks the chat agent emits
@@ -38,7 +75,10 @@ const STREAM_THROTTLE_MS = 120
  */
 export function useApplyShapeOpsLive(
   enabled: boolean,
-  onScreenCreated?: (shapeId: string, userPrompt: string, brief?: string) => void
+  onScreenCreated?: (shapeId: string, userPrompt: string, brief?: string) => void,
+  executeOptions?: ExecuteOpsOptions,
+  errorKey?: string,
+  targetThreadId?: string | null
 ): void {
   const onScreenCreatedRef = useRef(onScreenCreated)
   onScreenCreatedRef.current = onScreenCreated
@@ -92,7 +132,7 @@ export function useApplyShapeOpsLive(
     // `frameOnFirst` gently brings the build area into view exactly once per turn
     // (the first batch), then leaves the camera alone so the live build is smooth.
     const applyFrom = (text: string, frameOnFirst: boolean): void => {
-      const { affectedIds, errors, totalBlocks } = applyCanvasOpsSince(text, appliedCount)
+      const { affectedIds, errors, totalBlocks } = applyCanvasOpsSince(text, appliedCount, executeOptions)
       if (totalBlocks <= appliedCount) return
       appliedCount = totalBlocks
       // Capture errors even when nothing applied — an all-failed block has errors
@@ -138,7 +178,7 @@ export function useApplyShapeOpsLive(
         appliedToolBlockIds.add(block.id)
         return
       }
-      const { affectedIds, errors } = applyCanvasOpBlocks(blocks, `tool:${block.id}`)
+      const { affectedIds, errors } = applyCanvasOpBlocks(blocks, `tool:${block.id}`, executeOptions)
       appliedToolBlockIds.add(block.id)
       if (errors.length > 0) errorsThisTurn.push(...errors)
       if (affectedIds.length === 0) return
@@ -220,18 +260,25 @@ export function useApplyShapeOpsLive(
       }
       // Hand this turn's op errors to the next canvas turn so the agent can fix
       // them. Always set (even []) so a clean turn clears stale errors.
-      setLastCanvasOpErrors([...errorsThisTurn])
+      setLastCanvasOpErrors([...errorsThisTurn], errorKey)
       resetTurn()
       // Now that the just-finished turn has cleared, start the next queued screen.
       drainPendingScreens()
     }
 
+    // If this hook becomes enabled after a turn has already started (common for
+    // the first Code-canvas send, where the thread id appears after sendMessage),
+    // catch up with already-present tool blocks/live text before waiting for the
+    // next store change.
+    replayActiveCanvasTurn(useChatStore.getState(), applyToolBlock, processStreaming, targetThreadId)
+
     const unsubscribe = useChatStore.subscribe((state, prev) => {
+      if (!activeCanvasTurnMatchesThread(state, targetThreadId)) return
       const turnStarted = !prev.currentTurnId && Boolean(state.currentTurnId)
       const turnEnded = Boolean(prev.currentTurnId) && !state.currentTurnId
       if (turnStarted) resetTurn()
       if (state.currentTurnId && state.blocks !== prev.blocks) {
-        for (const block of state.blocks) {
+        for (const block of blocksForActiveCanvasTurn(state)) {
           if (block.kind === 'tool') applyToolBlock(block)
         }
       }
@@ -245,5 +292,5 @@ export function useApplyShapeOpsLive(
       if (trailingTimer) clearTimeout(trailingTimer)
       unsubscribe()
     }
-  }, [enabled])
+  }, [enabled, executeOptions, errorKey, targetThreadId])
 }

@@ -4,8 +4,10 @@ import { useCanvasShapeStore } from './canvas-shape-store'
 import { useCanvasUndoStore } from './canvas-undo-store'
 import { useCanvasSelectionStore } from './canvas-selection-store'
 import { useDesignSystemStore } from './design-system-store'
+import { useDesignWorkspaceStore } from '../design-workspace-store'
 import { createEmptyDocument, type CanvasShape } from './canvas-types'
 import { createDefaultShape } from './canvas-types'
+import { takeLastLintFindings } from './design-lint'
 import { resolveTokenPatch } from './design-system-types'
 
 beforeEach(() => {
@@ -13,6 +15,7 @@ beforeEach(() => {
   useCanvasUndoStore.getState().clear()
   useCanvasSelectionStore.getState().clearSelection()
   useDesignSystemStore.getState().resetSystem()
+  useDesignWorkspaceStore.setState({ designContext: { designTarget: 'web' } })
 })
 
 function addRect(): string {
@@ -114,6 +117,42 @@ describe('design-system-template', () => {
     expect(shapes.some((shape) => shape.tokenBindings?.fill === 'light/brand/primary')).toBe(true)
   })
 
+  it('defaults omitted templates to web style-kit specimens for the web target', () => {
+    const r = executeOps([
+      {
+        op: 'design-system-template',
+        operation: 'create',
+        name: 'Web Kit',
+        seedColor: '#2563EB'
+      }
+    ])
+
+    expect(r.ok).toBe(true)
+    const shapes = Object.values(useCanvasShapeStore.getState().document.objects)
+    expect(shapes.some((shape) => shape.name === 'Top nav surface')).toBe(true)
+    expect(shapes.some((shape) => shape.name === 'Bottom nav surface')).toBe(false)
+    expect(shapes.some((shape) => shape.type === 'text' && shape.textContent === 'Web target - saas kit')).toBe(true)
+  })
+
+  it('defaults omitted templates to mobile style-kit specimens for the app target', () => {
+    useDesignWorkspaceStore.setState({ designContext: { designTarget: 'app' } })
+
+    const r = executeOps([
+      {
+        op: 'design-system-template',
+        operation: 'create',
+        name: 'App Kit',
+        seedColor: '#2563EB'
+      }
+    ])
+
+    expect(r.ok).toBe(true)
+    const shapes = Object.values(useCanvasShapeStore.getState().document.objects)
+    expect(shapes.some((shape) => shape.name === 'Bottom nav surface')).toBe(true)
+    expect(shapes.some((shape) => shape.name === 'Top nav surface')).toBe(false)
+    expect(shapes.some((shape) => shape.type === 'text' && shape.textContent === 'App target - mobile kit')).toBe(true)
+  })
+
   it('apply operation reflows existing token-bound shapes without creating a new board', () => {
     executeOps([{ op: 'define-token', name: 'brand/primary', kind: 'color', value: '#111111' }])
     const id = addRect()
@@ -131,6 +170,51 @@ describe('design-system-template', () => {
       color: '#D4AF37',
       opacity: 1
     })
+  })
+
+  it('accepts validate as a direct design-system-template op for legacy canvas calls', () => {
+    executeOps([{ op: 'define-token', name: 'brand/primary', kind: 'color', value: '#123456' }])
+    executeOps([{ op: 'define-token', name: 'brand/secondary', kind: 'color', value: '#654321' }])
+    const id = addRect()
+    const outsideScope = addRect()
+    useCanvasShapeStore.getState().updateShape(id, {
+      name: 'Primary swatch',
+      fills: [{ type: 'solid', color: '#123456', opacity: 1 }]
+    })
+    useCanvasShapeStore.getState().updateShape(outsideScope, {
+      name: 'Secondary swatch',
+      fills: [{ type: 'solid', color: '#654321', opacity: 1 }]
+    })
+
+    const r = executeOps([{ op: 'design-system-template', operation: 'validate', targetIds: [id] }])
+
+    expect(r.ok).toBe(true)
+    expect(r.affectedIds).toEqual([])
+    expect(takeLastLintFindings()).toEqual([
+      expect.objectContaining({ code: 'off-token-color', shapeId: id })
+    ])
+  })
+
+  it('scopes standalone design-system lint ops to target ids', () => {
+    executeOps([{ op: 'define-token', name: 'brand/primary', kind: 'color', value: '#123456' }])
+    executeOps([{ op: 'define-token', name: 'brand/secondary', kind: 'color', value: '#654321' }])
+    const id = addRect()
+    const outsideScope = addRect()
+    useCanvasShapeStore.getState().updateShape(id, {
+      name: 'Primary swatch',
+      fills: [{ type: 'solid', color: '#123456', opacity: 1 }]
+    })
+    useCanvasShapeStore.getState().updateShape(outsideScope, {
+      name: 'Secondary swatch',
+      fills: [{ type: 'solid', color: '#654321', opacity: 1 }]
+    })
+
+    const r = executeOps([{ op: 'lint-design-system', targetIds: [id] }])
+
+    expect(r.ok).toBe(true)
+    expect(takeLastLintFindings()).toEqual([
+      expect.objectContaining({ code: 'off-token-color', shapeId: id })
+    ])
   })
 })
 

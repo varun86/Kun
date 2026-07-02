@@ -1,8 +1,20 @@
-import { describe, expect, it } from 'vitest'
-import { parseCanvasDocument, serializeCanvasDocument } from './canvas-persistence'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import {
+  canvasDocumentKey,
+  canvasDocPath,
+  parseCanvasDocument,
+  persistCanvasDocument,
+  serializeCanvasDocument
+} from './canvas-persistence'
 import { createDefaultShape, createEmptyDocument, createHtmlFrameShape, isHtmlFrame } from './canvas-types'
 
 describe('canvas-persistence round-trip', () => {
+  it('builds a stable document key from workspace and canvas path', () => {
+    expect(canvasDocumentKey('/workspace', 'code-thread-1', '.kun-canvas')).toBe(
+      `/workspace\0${canvasDocPath('code-thread-1', '.kun-canvas')}`
+    )
+  })
+
   it('preserves htmlArtifactId and devicePreset across serialize → parse', () => {
     const doc = createEmptyDocument()
     const root = doc.objects[doc.rootId]
@@ -102,5 +114,62 @@ describe('canvas-persistence round-trip', () => {
     const frame = reloaded!.objects.f1
     expect(frame.htmlArtifactId).toBe('a1')
     expect(frame.devicePreset).toBeUndefined()
+  })
+})
+
+describe('persistCanvasDocument debounce', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('does not let one canvas save cancel another canvas save', () => {
+    vi.useFakeTimers()
+    const writeWorkspaceFile = vi.fn(async () => ({ ok: true as const }))
+    vi.stubGlobal('window', { kunGui: { writeWorkspaceFile } })
+
+    const designDoc = createEmptyDocument()
+    const codeDoc = createEmptyDocument()
+
+    persistCanvasDocument('/workspace', 'design-board', designDoc)
+    persistCanvasDocument('/workspace', 'code-thread-1', codeDoc, '.kun-canvas')
+    vi.advanceTimersByTime(600)
+
+    expect(writeWorkspaceFile).toHaveBeenCalledTimes(2)
+    expect(writeWorkspaceFile).toHaveBeenCalledWith({
+      path: canvasDocPath('design-board'),
+      workspaceRoot: '/workspace',
+      content: serializeCanvasDocument(designDoc)
+    })
+    expect(writeWorkspaceFile).toHaveBeenCalledWith({
+      path: canvasDocPath('code-thread-1', '.kun-canvas'),
+      workspaceRoot: '/workspace',
+      content: serializeCanvasDocument(codeDoc)
+    })
+  })
+
+  it('keeps debouncing repeated saves for the same canvas', () => {
+    vi.useFakeTimers()
+    const writeWorkspaceFile = vi.fn(async () => ({ ok: true as const }))
+    vi.stubGlobal('window', { kunGui: { writeWorkspaceFile } })
+
+    const firstDoc = createEmptyDocument()
+    const latestDoc = createEmptyDocument()
+    const root = latestDoc.objects[latestDoc.rootId]
+    const rect = createDefaultShape('rect', 10, 20)
+    rect.name = 'Latest'
+    latestDoc.objects[rect.id] = { ...rect, parentId: latestDoc.rootId }
+    latestDoc.objects[latestDoc.rootId] = { ...root, children: [rect.id] }
+
+    persistCanvasDocument('/workspace', 'code-thread-1', firstDoc, '.kun-canvas')
+    persistCanvasDocument('/workspace', 'code-thread-1', latestDoc, '.kun-canvas')
+    vi.advanceTimersByTime(600)
+
+    expect(writeWorkspaceFile).toHaveBeenCalledTimes(1)
+    expect(writeWorkspaceFile).toHaveBeenCalledWith({
+      path: canvasDocPath('code-thread-1', '.kun-canvas'),
+      workspaceRoot: '/workspace',
+      content: serializeCanvasDocument(latestDoc)
+    })
   })
 })

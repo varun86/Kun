@@ -225,4 +225,31 @@ describe('lint-design-system op stashes findings for the next turn', () => {
     // one-shot: cleared after taking
     expect(takeLastLintFindings()).toHaveLength(0)
   })
+
+  it('can stash lint findings under a caller-provided key', () => {
+    executeOps([{ op: 'define-token', name: 'brand/primary', kind: 'color', value: '#3b82d8' }])
+    executeOps([
+      {
+        op: 'add',
+        shape: {
+          type: 'rect',
+          name: 'CTA',
+          x: 0,
+          y: 0,
+          width: 100,
+          height: 50,
+          fills: [{ type: 'solid', color: '#3b82d8', opacity: 1 }]
+        }
+      }
+    ])
+
+    const r = executeOps([{ op: 'lint-design-system' }], 'lint-test', {
+      lintFeedbackKey: 'code-canvas:thread-1'
+    })
+
+    expect(r.ok).toBe(true)
+    expect(takeLastLintFindings()).toHaveLength(0)
+    expect(takeLastLintFindings('code-canvas:thread-1').length).toBeGreaterThan(0)
+    expect(takeLastLintFindings('code-canvas:thread-1')).toHaveLength(0)
+  })
 })

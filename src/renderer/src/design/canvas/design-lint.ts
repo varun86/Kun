@@ -140,15 +140,20 @@ export function lintDesignSystem(
  * One-shot stash for the last `lint-design-system` run, taken by the next canvas
  * turn's prompt builder so findings surface to the agent (mirrors the op-error
  * stash in apply-shape-ops). Kept here to avoid a shape-ops ↔ apply-shape-ops cycle.
+ *
+ * Keyed so the Code sidebar whiteboard can keep per-thread critique findings
+ * separate from Design mode's active board.
  */
-let _lastLintFindings: LintFinding[] = []
+const DEFAULT_LINT_KEY = '__default__'
+const _lastLintFindings = new Map<string, LintFinding[]>()
 
-export function setLastLintFindings(findings: LintFinding[]): void {
-  _lastLintFindings = findings
+export function setLastLintFindings(findings: LintFinding[], key: string = DEFAULT_LINT_KEY): void {
+  if (findings.length === 0) _lastLintFindings.delete(key)
+  else _lastLintFindings.set(key, findings)
 }
 
-export function takeLastLintFindings(): LintFinding[] {
-  const out = _lastLintFindings
-  _lastLintFindings = []
+export function takeLastLintFindings(key: string = DEFAULT_LINT_KEY): LintFinding[] {
+  const out = _lastLintFindings.get(key) ?? []
+  _lastLintFindings.delete(key)
   return out
 }

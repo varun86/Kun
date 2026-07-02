@@ -15,6 +15,7 @@ import { useApplyShapeOpsLive } from '../../design/canvas/use-apply-shape-ops-li
 type CanvasProps = {
   leftSidebarCollapsed: boolean
   onToggleLeftSidebar: () => void
+  busy?: boolean
   onOpenAgentSettings?: () => void
   onImplementDesign?: (artifact: DesignArtifact) => void
   onScreenCreated?: (shapeId: string, userPrompt: string, brief?: string) => void
@@ -27,6 +28,7 @@ type CanvasProps = {
 export function DesignCanvas({
   leftSidebarCollapsed,
   onToggleLeftSidebar,
+  busy = false,
   onOpenAgentSettings,
   onImplementDesign,
   onScreenCreated,
@@ -97,6 +99,7 @@ export function DesignCanvas({
         {...(baseDir ? { baseDir } : {})}
         leftSidebarCollapsed={leftSidebarCollapsed}
         onToggleLeftSidebar={onToggleLeftSidebar}
+        busy={busy}
         onOpenAgentSettings={onOpenAgentSettings}
         syncHtmlScreens
         onImplementDesign={onImplementDesign}

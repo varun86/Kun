@@ -9,24 +9,17 @@ export type DesignMessageBlock =
   | { kind: 'user'; id: string; text: string; createdAt: string }
   | { kind: 'assistant'; id: string; text: string; createdAt: string }
 
-export type DesignTarget =
-  | { type: 'new' }
-  | { type: 'html'; artifactId: string; title: string }
-  | { type: 'canvas'; artifactId: string }
-
 type DesignAssistantState = {
   designThreadId: string | null
   designBlocks: DesignMessageBlock[]
   designInput: string
   designBusy: boolean
-  designTarget: DesignTarget
   /** IDs the most-recent AI message touched. SelectionOverlay glows these for ~800ms. */
   lastAiAffectedIds: string[]
   /** Timestamp (ms since epoch) when the glow should start. null = no glow. */
   lastAiActionAt: number | null
 
   setDesignInput: (text: string) => void
-  setDesignTarget: (target: DesignTarget) => void
   clearDesignConversation: () => void
   ensureDesignThread: (workspaceRoot: string) => Promise<string>
   sendDesignMessage: (
@@ -76,12 +69,10 @@ export const useDesignAssistantStore = create<DesignAssistantState>((set, get) =
   designBlocks: [],
   designInput: '',
   designBusy: false,
-  designTarget: { type: 'new' },
   lastAiAffectedIds: [],
   lastAiActionAt: null,
 
   setDesignInput: (text) => set({ designInput: text }),
-  setDesignTarget: (target) => set({ designTarget: target }),
 
   clearDesignConversation: () =>
     set({

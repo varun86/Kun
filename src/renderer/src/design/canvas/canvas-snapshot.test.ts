@@ -135,6 +135,25 @@ describe('snapshotCanvas', () => {
     expect(snap.placement?.recommendedSlots).toHaveLength(3)
   })
 
+  it('uses the requested default screen size for placement recommendations', () => {
+    const doc = createEmptyDocument()
+    const snap = snapshotCanvas(doc, new Set(), {
+      viewBox: { x: 1000, y: 500, width: 1600, height: 1000 },
+      defaultScreenSize: { width: 390, height: 844 }
+    })
+
+    expect(snap.placement).toMatchObject({
+      defaultScreen: { w: 390, h: 844 }
+    })
+    expect(snap.placement?.recommendedSlots[0]).toMatchObject({
+      label: 'next',
+      x: 1605,
+      y: 578,
+      w: 390,
+      h: 844
+    })
+  })
+
   it('reports occupied HTML frames and avoids them in recommended placement', () => {
     const doc = createEmptyDocument()
     const root = doc.objects[doc.rootId]

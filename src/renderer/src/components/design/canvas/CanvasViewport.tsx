@@ -13,16 +13,21 @@ import { createTextTool } from '../../../design/canvas/tools/text-tool'
 import { createFrameTool } from '../../../design/canvas/tools/frame-tool'
 import { createHandTool } from '../../../design/canvas/tools/hand-tool'
 import { createScreenTool } from '../../../design/canvas/tools/screen-tool'
+import { createAiImageTool } from '../../../design/canvas/tools/ai-image-tool'
 import { createArrowTool, createLineTool } from '../../../design/canvas/tools/linear-tool'
 import { createDrawTool } from '../../../design/canvas/tools/draw-tool'
 import type { CanvasToolHandler } from '../../../design/canvas/tools/tool-types'
 import type { CanvasDocument, CanvasTool, Rect, ViewBox } from '../../../design/canvas/canvas-types'
 import { createEmptyDocument, shapeBounds } from '../../../design/canvas/canvas-types'
-import { loadCanvasDocument, persistCanvasDocument } from '../../../design/canvas/canvas-persistence'
+import { canvasDocumentKey, loadCanvasDocument, persistCanvasDocument } from '../../../design/canvas/canvas-persistence'
 import { loadDesignSystem, persistDesignSystem } from '../../../design/canvas/design-system-persistence'
 import { useDesignSystemStore } from '../../../design/canvas/design-system-store'
 import { createEmptyDesignSystem } from '../../../design/canvas/design-system-types'
-import { syncHtmlArtifactsToBoardDocument, syncHtmlFrameNodesToArtifacts } from '../../../design/design-board'
+import {
+  buildHtmlArtifactSyncKey,
+  syncHtmlArtifactsToBoardDocument,
+  syncHtmlFrameNodesToArtifacts
+} from '../../../design/design-board'
 import {
   getCanvasDocumentContentBounds
 } from '../../../design/canvas/canvas-placement'
@@ -37,7 +42,7 @@ import {
   setCanvasPasteWorkspaceRoot
 } from '../../../design/canvas/canvas-shortcuts'
 import { hitTest } from '../../../design/canvas/canvas-hit-test'
-import { hasPrototypePlayback } from '../../../design/prototype-player'
+import { hasPrototypePlayback, resolvePreferredPrototypeArtifactId } from '../../../design/prototype-player'
 import { ShapeDispatcher } from './shapes/ShapeDispatcher'
 import { CanvasGrid } from './CanvasGrid'
 import { CanvasToolbar } from './CanvasToolbar'
@@ -51,6 +56,48 @@ import { HtmlFrameOverlay } from './HtmlFrameOverlay'
 import { SidebarTitlebarToggleButton } from '../../sidebar/SidebarPrimitives'
 
 const CANVAS_VIEWPORT_STORAGE_PREFIX = 'kun.design.canvasViewport'
+
+export function shouldRenderDesignArtifactOverlays(surface: 'design' | 'code'): boolean {
+  return surface === 'design'
+}
+
+export function shouldRenderCanvasMinimap(surface: 'design' | 'code'): boolean {
+  return surface === 'design'
+}
+
+export function shouldSyncCanvasHtmlFrames(
+  surface: 'design' | 'code',
+  syncHtmlScreens: boolean
+): boolean {
+  return surface === 'design' && syncHtmlScreens
+}
+
+export function resolveCanvasDesignSystemBaseDir(
+  baseDir: string | undefined,
+  designSystemBaseDir: string | undefined
+): string | undefined {
+  return designSystemBaseDir ?? baseDir
+}
+
+function targetInside(root: HTMLElement | null, target: unknown): boolean {
+  if (!root || !target) return false
+  try {
+    return root.contains(target as Node)
+  } catch {
+    return false
+  }
+}
+
+export function shouldHandleCanvasKeyboardEvent(
+  surface: 'design' | 'code',
+  eventTarget: EventTarget | null,
+  root: HTMLElement | null,
+  activeElement?: Element | null
+): boolean {
+  if (surface === 'design') return true
+  const active = activeElement ?? (typeof document !== 'undefined' ? document.activeElement : null)
+  return targetInside(root, eventTarget) || targetInside(root, active)
+}
 
 function canvasViewportStorageKey(workspaceRoot: string, artifactId: string, baseDir?: string): string {
   return [
@@ -126,11 +173,16 @@ const toolFactories: Record<CanvasTool, () => CanvasToolHandler> = {
   text: createTextTool,
   frame: createFrameTool,
   screen: createScreenTool,
-  image: createSelectTool,
+  image: createAiImageTool,
   arrow: createArrowTool,
   line: createLineTool,
   draw: createDrawTool,
   hand: createHandTool
+}
+
+function createCanvasTool(tool: CanvasTool, surface: 'design' | 'code'): CanvasToolHandler {
+  if (tool === 'image') return createAiImageTool({ openAssistant: surface === 'design' })
+  return toolFactories[tool]()
 }
 
 type Props = {
@@ -138,8 +190,12 @@ type Props = {
   artifactId: string
   /** Workspace subdirectory the canvas doc persists under. Defaults to `.kun-design`. */
   baseDir?: string
+  /** Optional design-system directory. Defaults to baseDir; Code canvases use a per-thread dir. */
+  designSystemBaseDir?: string
+  surface?: 'design' | 'code'
   leftSidebarCollapsed?: boolean
   onToggleLeftSidebar?: () => void
+  busy?: boolean
   onOpenAgentSettings?: () => void
   syncHtmlScreens?: boolean
   onImplementDesign?: (artifact: DesignArtifact) => void
@@ -152,8 +208,11 @@ export function CanvasViewport({
   workspaceRoot,
   artifactId,
   baseDir,
+  designSystemBaseDir,
+  surface = 'design',
   leftSidebarCollapsed,
   onToggleLeftSidebar,
+  busy = false,
   onOpenAgentSettings,
   syncHtmlScreens = false,
   onUseElementAsContext,
@@ -161,6 +220,7 @@ export function CanvasViewport({
   onRequestQualityRepair
 }: Props) {
   const { t } = useTranslation('common')
+  const rootRef = useRef<HTMLDivElement>(null)
   const svgRef = useRef<SVGSVGElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const activePointerToolRef = useRef<CanvasToolHandler | null>(null)
@@ -168,10 +228,14 @@ export function CanvasViewport({
   const document = useCanvasShapeStore((s) => s.document)
   const vbox = useCanvasViewportStore((s) => s.vbox)
   const activeTool = useCanvasViewportStore((s) => s.activeTool)
+  const setActiveTool = useCanvasViewportStore((s) => s.setActiveTool)
   const gridVisible = useCanvasViewportStore((s) => s.gridVisible)
   const containerWidth = useCanvasViewportStore((s) => s.containerWidth)
   const setContainerSize = useCanvasViewportStore((s) => s.setContainerSize)
   const designArtifacts = useDesignWorkspaceStore((s) => s.artifacts)
+  const activeArtifactId = useDesignWorkspaceStore((s) => s.activeArtifactId)
+  const designTarget = useDesignWorkspaceStore((s) => s.designContext.designTarget ?? 'web')
+  const pagesRun = useDesignWorkspaceStore((s) => s.pagesRun)
 
   const selectedIds = useCanvasSelectionStore((s) => s.selectedIds)
   const hoverTargetId = useCanvasSelectionStore((s) => s.hoverTargetId)
@@ -188,13 +252,21 @@ export function CanvasViewport({
     onUseElementAsContext?.(null, promptSeed)
   }, [onUseElementAsContext])
 
+  const designArtifactOverlaysEnabled = shouldRenderDesignArtifactOverlays(surface)
+  const minimapEnabled = shouldRenderCanvasMinimap(surface)
+  const htmlFrameSyncEnabled = shouldSyncCanvasHtmlFrames(surface, syncHtmlScreens)
+  const resolvedDesignSystemBaseDir = resolveCanvasDesignSystemBaseDir(baseDir, designSystemBaseDir)
   const zoom = containerWidth / vbox.width
   const uiScale = useCanvasUiScale()
-  const tool = useMemo(() => toolFactories[activeTool](), [activeTool])
+  const tool = useMemo(() => createCanvasTool(activeTool, surface), [activeTool, surface])
   const middlePanTool = useMemo(() => createHandTool(), [])
   const workspaceValue = useMemo(() => ({ workspaceRoot }), [workspaceRoot])
   const viewportStorageKey = useMemo(
     () => canvasViewportStorageKey(workspaceRoot, artifactId, baseDir),
+    [artifactId, baseDir, workspaceRoot]
+  )
+  const documentKey = useMemo(
+    () => canvasDocumentKey(workspaceRoot, artifactId, baseDir),
     [artifactId, baseDir, workspaceRoot]
   )
   const selectedHtmlArtifactId = useMemo(() => {
@@ -207,6 +279,10 @@ export function CanvasViewport({
   const prototypePlayable = useMemo(
     () => hasPrototypePlayback(designArtifacts),
     [designArtifacts]
+  )
+  const initialPrototypeArtifactId = useMemo(
+    () => resolvePreferredPrototypeArtifactId(designArtifacts, selectedHtmlArtifactId, activeArtifactId),
+    [activeArtifactId, designArtifacts, selectedHtmlArtifactId]
   )
 
   // Container resize observer
@@ -222,6 +298,12 @@ export function CanvasViewport({
     observer.observe(el)
     return () => observer.disconnect()
   }, [setContainerSize])
+
+  useEffect(() => {
+    if (surface === 'code' && activeTool === 'screen') {
+      setActiveTool('select')
+    }
+  }, [activeTool, setActiveTool, surface])
 
   // Data flow loop: load on artifact change, persist on doc change, reset on unmount/switch
   useEffect(() => {
@@ -266,6 +348,7 @@ export function CanvasViewport({
     useCanvasSelectionStore.getState().clearSelection()
     useCanvasSelectionStore.getState().setMarquee(null)
     useCanvasSelectionStore.getState().setHoverTarget(null)
+    useCanvasShapeStore.getState().loadDocument(createEmptyDocument(), documentKey)
     useCanvasViewportStore.getState().resetView()
     useCanvasUndoStore.getState().clear()
 
@@ -274,7 +357,7 @@ export function CanvasViewport({
       if (cancelled) return
       let doc = loaded ?? createEmptyDocument()
       let addedFrameIds: string[] = []
-      if (syncHtmlScreens) {
+      if (htmlFrameSyncEnabled) {
         const synced = syncHtmlArtifactsToBoardDocument(
           doc,
           useDesignWorkspaceStore.getState().artifacts
@@ -285,7 +368,7 @@ export function CanvasViewport({
           persistCanvasDocument(workspaceRoot, artifactId, doc, baseDir)
         }
       }
-      useCanvasShapeStore.getState().loadDocument(doc)
+      useCanvasShapeStore.getState().loadDocument(doc, documentKey)
       const storedView = readStoredCanvasViewport(viewportStorageKey)
       if (storedView) {
         useCanvasViewportStore.getState().setVbox(storedView)
@@ -299,7 +382,7 @@ export function CanvasViewport({
 
     // 2b) Load the doc-level design system (tokens + components), shared across
     // this document's artifacts. Reset to empty when none on disk.
-    void loadDesignSystem(workspaceRoot, baseDir).then((system) => {
+    void loadDesignSystem(workspaceRoot, resolvedDesignSystemBaseDir).then((system) => {
       if (cancelled) return
       useDesignSystemStore.getState().loadSystem(system ?? createEmptyDesignSystem())
     })
@@ -309,14 +392,14 @@ export function CanvasViewport({
       if (cancelled) return
       if (state.document === prev.document) return
       persistCanvasDocument(workspaceRoot, artifactId, state.document, baseDir)
-      queueHtmlFrameNodeSync(state.document)
+      if (htmlFrameSyncEnabled) queueHtmlFrameNodeSync(state.document)
     })
 
     // 3b) Persist the design system when tokens/components change (debounced).
     const unsubscribeDesignSystem = useDesignSystemStore.subscribe((state, prev) => {
       if (cancelled) return
       if (state.system === prev.system) return
-      persistDesignSystem(workspaceRoot, state.system, baseDir)
+      persistDesignSystem(workspaceRoot, state.system, resolvedDesignSystemBaseDir)
     })
 
     return () => {
@@ -326,32 +409,19 @@ export function CanvasViewport({
       unsubscribe()
       unsubscribeDesignSystem()
     }
-  }, [workspaceRoot, artifactId, baseDir, syncHtmlScreens, viewportStorageKey])
+  }, [workspaceRoot, artifactId, baseDir, documentKey, htmlFrameSyncEnabled, resolvedDesignSystemBaseDir, viewportStorageKey])
 
   const htmlArtifactSyncKey = useMemo(() => {
-    if (!syncHtmlScreens) return ''
-    return designArtifacts
-      .filter((artifact) => artifact.kind === 'html')
-      .map((artifact) => {
-        const node = artifact.node
-        return [
-          artifact.id,
-          artifact.title,
-          node?.x ?? '',
-          node?.y ?? '',
-          node?.width ?? '',
-          node?.height ?? ''
-        ].join(':')
-      })
-      .join('|')
-  }, [designArtifacts, syncHtmlScreens])
+    if (!htmlFrameSyncEnabled) return ''
+    return buildHtmlArtifactSyncKey(designArtifacts, designTarget)
+  }, [designArtifacts, designTarget, htmlFrameSyncEnabled])
 
   useEffect(() => {
-    if (!docLoaded || !syncHtmlScreens || !artifactId || !workspaceRoot) return
+    if (!docLoaded || !htmlFrameSyncEnabled || !artifactId || !workspaceRoot) return
     const current = useCanvasShapeStore.getState().document
     const synced = syncHtmlArtifactsToBoardDocument(current, useDesignWorkspaceStore.getState().artifacts)
     if (synced.addedFrameIds.length === 0 && synced.updatedFrameIds.length === 0) return
-    useCanvasShapeStore.getState().loadDocument(synced.document)
+    useCanvasShapeStore.getState().loadDocument(synced.document, documentKey)
     persistCanvasDocument(workspaceRoot, artifactId, synced.document, baseDir)
     if (synced.addedFrameIds.length > 0) {
       const bounds = boundsForShapeIds(synced.document, synced.addedFrameIds)
@@ -367,7 +437,7 @@ export function CanvasViewport({
         })
       }
     }
-  }, [artifactId, baseDir, docLoaded, htmlArtifactSyncKey, syncHtmlScreens, workspaceRoot])
+  }, [artifactId, baseDir, docLoaded, documentKey, htmlArtifactSyncKey, htmlFrameSyncEnabled, workspaceRoot])
 
   useEffect(() => {
     if (!docLoaded || !artifactId || !workspaceRoot) return
@@ -423,12 +493,13 @@ export function CanvasViewport({
     (e: React.PointerEvent) => {
       if (e.button !== 0 && e.button !== 1) return
       e.preventDefault()
+      if (surface === 'code') rootRef.current?.focus({ preventScroll: true })
       e.currentTarget.setPointerCapture(e.pointerId)
       const pointerTool = e.button === 1 ? middlePanTool : tool
       activePointerToolRef.current = pointerTool
       pointerTool.onPointerDown(makePointerEvent(e))
     },
-    [middlePanTool, tool, makePointerEvent]
+    [middlePanTool, tool, makePointerEvent, surface]
   )
 
   const onPointerMove = useCallback(
@@ -477,12 +548,12 @@ export function CanvasViewport({
       }
       // Double-clicking a filled image opens the annotation editor: draw markup
       // over the picture, then the agent re-edits it (image-to-image).
-      if (shape?.type === 'image' && shape.imageUrl) {
+      if (surface === 'design' && shape?.type === 'image' && shape.imageUrl) {
         useCanvasSelectionStore.getState().select([hitId])
         useImageAnnotationStore.getState().openImageAnnotation(hitId)
       }
     },
-    [screenToCanvas]
+    [screenToCanvas, surface]
   )
 
   const onWheel = useCallback(
@@ -514,9 +585,11 @@ export function CanvasViewport({
   useEffect(() => {
     setCanvasPasteWorkspaceRoot(workspaceRoot || null)
     const onKeyDown = (e: KeyboardEvent): void => {
+      if (!shouldHandleCanvasKeyboardEvent(surface, e.target, rootRef.current)) return
       handleCanvasKeyDown(e)
     }
     const onKeyUp = (e: KeyboardEvent): void => {
+      if (!shouldHandleCanvasKeyboardEvent(surface, e.target, rootRef.current)) return
       handleCanvasKeyUp(e)
     }
     window.addEventListener('keydown', onKeyDown)
@@ -526,7 +599,7 @@ export function CanvasViewport({
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('keyup', onKeyUp)
     }
-  }, [workspaceRoot])
+  }, [surface, workspaceRoot])
 
   const viewBoxStr = `${vbox.x} ${vbox.y} ${vbox.width} ${vbox.height}`
   const cursor = activeTool === 'hand' ? 'grab' : tool.cursor
@@ -535,7 +608,11 @@ export function CanvasViewport({
 
   return (
     <CanvasWorkspaceContext.Provider value={workspaceValue}>
-      <div className="ds-no-drag relative h-full w-full overflow-hidden bg-[#f8fafc] dark:bg-[#111318]">
+      <div
+        ref={rootRef}
+        tabIndex={surface === 'code' ? -1 : undefined}
+        className="ds-no-drag relative h-full w-full overflow-hidden bg-[#f8fafc] outline-none dark:bg-[#111318]"
+      >
         <div className="pointer-events-none absolute left-3 top-3 z-40 flex min-w-0 items-start">
           <div
             className={`pointer-events-auto flex min-w-0 items-center gap-2 ${
@@ -557,6 +634,8 @@ export function CanvasViewport({
         >
           <CanvasToolbar
             workspaceRoot={workspaceRoot}
+            surface={surface}
+            designTargetDisabled={busy || Boolean(pagesRun)}
             prototypePlayable={prototypePlayable}
             onOpenPrototypePlayer={() => setPrototypePlayerOpen(true)}
             onOpenAgentSettings={onOpenAgentSettings}
@@ -571,14 +650,16 @@ export function CanvasViewport({
             <CanvasZoomBar />
           </div>
         </div>
-        <div
-          className="pointer-events-none absolute bottom-4 left-4 z-40 hidden md:block"
-          style={{ transform: `scale(${uiScale})`, transformOrigin: 'bottom left' }}
-        >
-          <div className="pointer-events-auto">
-            <CanvasMinimap />
+        {minimapEnabled ? (
+          <div
+            className="pointer-events-none absolute bottom-4 left-4 z-40 hidden md:block"
+            style={{ transform: `scale(${uiScale})`, transformOrigin: 'bottom left' }}
+          >
+            <div className="pointer-events-auto">
+              <CanvasMinimap />
+            </div>
           </div>
-        </div>
+        ) : null}
         <div
           ref={containerRef}
           className="absolute inset-0 overflow-hidden bg-[#f8fafc] dark:bg-[#111318]"
@@ -619,11 +700,13 @@ export function CanvasViewport({
               </g>
 
               <g id="overlay-layer">
-                <PrototypeFlowOverlay
-                  artifacts={designArtifacts}
-                  objects={document.objects}
-                  zoom={zoom}
-                />
+                {designArtifactOverlaysEnabled ? (
+                  <PrototypeFlowOverlay
+                    artifacts={designArtifacts}
+                    objects={document.objects}
+                    zoom={zoom}
+                  />
+                ) : null}
                 <SelectionOverlay
                   selectedIds={selectedIds}
                   hoverTargetId={hoverTargetId}
@@ -636,21 +719,26 @@ export function CanvasViewport({
               </g>
             </svg>
           )}
-          <HtmlFrameOverlay
-            workspaceRoot={workspaceRoot}
-            onUseElementAsContext={onUseElementAsContext}
-            onRuntimeQualityFindings={onRuntimeQualityFindings}
-            onRequestQualityRepair={onRequestQualityRepair}
-          />
+          {designArtifactOverlaysEnabled ? (
+            <HtmlFrameOverlay
+              workspaceRoot={workspaceRoot}
+              onUseElementAsContext={onUseElementAsContext}
+              onRuntimeQualityFindings={onRuntimeQualityFindings}
+              onRequestQualityRepair={onRequestQualityRepair}
+            />
+          ) : null}
         </div>
-        <PrototypePlayerOverlay
-          open={prototypePlayerOpen}
-          workspaceRoot={workspaceRoot}
-          artifacts={designArtifacts}
-          initialArtifactId={selectedHtmlArtifactId}
-          onClose={() => setPrototypePlayerOpen(false)}
-          onRequestMissingScreen={requestMissingPrototypeScreen}
-        />
+        {designArtifactOverlaysEnabled ? (
+          <PrototypePlayerOverlay
+            open={prototypePlayerOpen}
+            workspaceRoot={workspaceRoot}
+            artifacts={designArtifacts}
+            initialArtifactId={initialPrototypeArtifactId}
+            designTarget={designTarget}
+            onClose={() => setPrototypePlayerOpen(false)}
+            onRequestMissingScreen={requestMissingPrototypeScreen}
+          />
+        ) : null}
       </div>
     </CanvasWorkspaceContext.Provider>
   )

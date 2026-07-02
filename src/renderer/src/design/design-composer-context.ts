@@ -1,11 +1,12 @@
 import { artifactDirOf } from './design-artifact-persistence'
 import { isDirectImageUrl } from './canvas/canvas-image-source'
 import { isHtmlFrame, type CanvasDocument, type CanvasShape } from './canvas/canvas-types'
+import { normalizeDesignTarget, type DesignTarget } from './design-context'
 import type { DesignArtifact } from './design-types'
 
 export type DesignComposerContext = {
   id: string
-  kind: 'html-artifact' | 'html-screen-frame' | 'html-element' | 'canvas-selection'
+  kind: 'design-target' | 'html-artifact' | 'html-screen-frame' | 'html-element' | 'canvas-selection'
   label: string
   detail?: string
   removable?: boolean
@@ -140,6 +141,21 @@ export function designHtmlElementContextTarget(input: {
 
 export function designComposerContextChips(targets: readonly DesignComposerContextTarget[]): DesignComposerContext[] {
   return targets.map((target) => target.chip)
+}
+
+export function designTargetContextChip(input: {
+  designTarget?: DesignTarget
+  label: string
+  detail?: string
+}): DesignComposerContext {
+  const target = normalizeDesignTarget(input.designTarget)
+  return {
+    id: `design-target:${target}`,
+    kind: 'design-target',
+    label: input.label,
+    ...(input.detail ? { detail: input.detail } : {}),
+    removable: false
+  }
 }
 
 /**

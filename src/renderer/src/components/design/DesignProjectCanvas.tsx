@@ -1383,6 +1383,7 @@ export function DesignProjectCanvas({
   const viewport = useDesignWorkspaceStore((s) => s.viewport)
   const devPreviewUrl = useDesignWorkspaceStore((s) => s.devPreviewUrl)
   const designIntentMode = useDesignWorkspaceStore((s) => s.designIntentMode)
+  const pagesRun = useDesignWorkspaceStore((s) => s.pagesRun)
   const setActiveArtifact = useDesignWorkspaceStore((s) => s.setActiveArtifact)
   const setCanvasView = useDesignWorkspaceStore((s) => s.setCanvasView)
   const setViewport = useDesignWorkspaceStore((s) => s.setViewport)
@@ -2004,6 +2005,7 @@ export function DesignProjectCanvas({
               onClose={() => setContextPopoverOpen(false)}
               onOpenSettings={onOpenAgentSettings}
               titleKey="designContextLabel"
+              designTargetDisabled={Boolean(pagesRun)}
             />
           </div>
         ) : null}

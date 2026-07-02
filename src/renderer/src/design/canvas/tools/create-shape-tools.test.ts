@@ -6,8 +6,10 @@ import { useCanvasUndoStore } from '../canvas-undo-store'
 import { useCanvasViewportStore } from '../canvas-viewport-store'
 import { setScreenArtifactFactory } from '../screen-artifact-bridge'
 import { executeOps } from '../shape-ops'
+import { useDesignWorkspaceStore } from '../../design-workspace-store'
 import { createDrawTool } from './draw-tool'
 import { createEllipseTool } from './ellipse-tool'
+import { createAiImageTool } from './ai-image-tool'
 import { createFrameTool } from './frame-tool'
 import { createRectTool } from './rect-tool'
 import { createScreenTool } from './screen-tool'
@@ -29,6 +31,7 @@ beforeEach(() => {
     useCanvasViewportStore.getState().toggleSnap()
   }
   setScreenArtifactFactory(() => null)
+  useDesignWorkspaceStore.setState({ designContext: { designTarget: 'web' } })
   useCanvasViewportStore.getState().setActiveTool('rect')
 })
 
@@ -125,6 +128,26 @@ describe('shape creation tools', () => {
     expect(useCanvasSelectionStore.getState().activeSnapGuides).toEqual([])
   })
 
+  it('click-creates app-sized screen frames when the design target is app', () => {
+    useDesignWorkspaceStore.setState({ designContext: { designTarget: 'app' } })
+    setScreenArtifactFactory((name) => `artifact-${name.toLowerCase()}`)
+    const tool = createScreenTool()
+
+    tool.onPointerDown(pointer(24, 32))
+    tool.onPointerUp(pointer(24, 32))
+
+    const shape = useCanvasShapeStore.getState().document.objects[selectedShapeId()]
+    expect(shape).toMatchObject({
+      type: 'frame',
+      x: 24,
+      y: 32,
+      width: 390,
+      height: 844,
+      htmlArtifactId: 'artifact-screen',
+      devicePreset: 'mobile'
+    })
+  })
+
   it('keeps shift-drawn ellipses circular instead of applying single-axis snap', () => {
     const tool = createEllipseTool()
 
@@ -153,6 +176,46 @@ describe('shape creation tools', () => {
     })
     expect(useCanvasSelectionStore.getState().editingId).toBe(shape.id)
     expect(useCanvasViewportStore.getState().activeTool).toBe('select')
+  })
+
+  it('creates a selected AI image slot that opens the canvas assistant', () => {
+    const tool = createAiImageTool()
+    useDesignWorkspaceStore.setState({ canvasAssistantOpen: false })
+
+    tool.onPointerDown(pointer(10, 20))
+    tool.onPointerMove(pointer(210, 160))
+    tool.onPointerUp(pointer(210, 160))
+
+    const shape = useCanvasShapeStore.getState().document.objects[selectedShapeId()]
+    expect(shape).toMatchObject({
+      type: 'image',
+      name: 'AI Image',
+      x: 10,
+      y: 20,
+      width: 200,
+      height: 140,
+      aiImageHolder: true
+    })
+    expect(useCanvasViewportStore.getState().activeTool).toBe('select')
+    expect(useDesignWorkspaceStore.getState().canvasAssistantOpen).toBe(true)
+  })
+
+  it('can create an AI image slot without opening the design assistant', () => {
+    const tool = createAiImageTool({ openAssistant: false })
+    useDesignWorkspaceStore.setState({ canvasAssistantOpen: false })
+
+    tool.onPointerDown(pointer(10, 20))
+    tool.onPointerUp(pointer(10, 20))
+
+    const shape = useCanvasShapeStore.getState().document.objects[selectedShapeId()]
+    expect(shape).toMatchObject({
+      type: 'image',
+      aiImageHolder: true,
+      width: 320,
+      height: 220
+    })
+    expect(useCanvasViewportStore.getState().activeTool).toBe('select')
+    expect(useDesignWorkspaceStore.getState().canvasAssistantOpen).toBe(false)
   })
 
   it('drags to create a snapped text box for canvas notes', () => {

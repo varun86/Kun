@@ -199,6 +199,40 @@ describe('chat-store-thread-actions queued messages', () => {
     )
   })
 
+  it('forwards GUI design canvas turns to the runtime provider', async () => {
+    const provider = {
+      connect: vi.fn(async () => undefined),
+      sendUserMessage: vi.fn(async () => ({
+        threadId: 'thr_existing',
+        turnId: 'turn_1',
+        userMessageItemId: 'user_1'
+      })),
+      subscribeThreadEvents: vi.fn(async () => undefined)
+    }
+    registryMock.getProvider.mockReturnValue(provider)
+    vi.stubGlobal('window', {
+      kunGui: {
+        getSettings: vi.fn(async () => ({
+          agents: { kun: { providerId: 'deepseek', model: 'deepseek-v4-pro' } },
+          codePromptPrefix: ''
+        })),
+        logError: vi.fn(async () => undefined)
+      }
+    })
+    const { actions, state } = buildHarness()
+    state.busy = false
+
+    await expect(actions.sendMessage('draw an architecture map', 'agent', {
+      guiDesignCanvas: true
+    })).resolves.toBe(true)
+
+    expect(provider.sendUserMessage).toHaveBeenCalledWith(
+      'thr_existing',
+      'draw an architecture map',
+      expect.objectContaining({ guiDesignCanvas: true })
+    )
+  })
+
   it('applies an override provider before sending from the write route', async () => {
     const provider = {
       connect: vi.fn(async () => undefined),

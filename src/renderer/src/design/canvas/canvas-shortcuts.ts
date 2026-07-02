@@ -32,6 +32,7 @@ const KEY_TO_TOOL: Record<string, CanvasTool> = {
   o: 'ellipse',
   t: 'text',
   f: 'frame',
+  i: 'image',
   a: 'arrow',
   l: 'line',
   p: 'draw',

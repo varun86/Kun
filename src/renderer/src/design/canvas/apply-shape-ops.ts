@@ -1,4 +1,4 @@
-import { executeOps, type OpError } from './shape-ops'
+import { executeOps, type ExecuteOpsOptions, type OpError } from './shape-ops'
 
 export const DESIGN_CANVAS_TOOL_NAMES = new Set([
   'design_canvas',
@@ -202,11 +202,15 @@ export type ApplyCanvasOpsSinceResult = {
   totalBlocks: number
 }
 
-export function applyCanvasOpBlocks(blocks: unknown[][], source = 'ai'): ApplyShapeOpsResult {
+export function applyCanvasOpBlocks(
+  blocks: unknown[][],
+  source = 'ai',
+  options?: ExecuteOpsOptions
+): ApplyShapeOpsResult {
   const affectedIds: string[] = []
   const errors: OpError[] = []
   for (let i = 0; i < blocks.length; i += 1) {
-    const result = executeOps(blocks[i], `${source}:${i}`)
+    const result = executeOps(blocks[i], `${source}:${i}`, options)
     affectedIds.push(...result.affectedIds)
     errors.push(...result.errors)
   }
@@ -221,9 +225,13 @@ export function applyCanvasOpBlocks(blocks: unknown[][], source = 'ai'): ApplySh
  * previously-returned `totalBlocks` as the next `startIndex`, and each freshly
  * completed `design_canvas` call renders the moment its block closes.
  */
-export function applyCanvasOpsSince(text: string, startIndex: number): ApplyCanvasOpsSinceResult {
+export function applyCanvasOpsSince(
+  text: string,
+  startIndex: number,
+  options?: ExecuteOpsOptions
+): ApplyCanvasOpsSinceResult {
   const blocks = extractCanvasOpBlocks(text)
-  const result = applyCanvasOpBlocks(blocks.slice(Math.max(0, startIndex)), 'ai')
+  const result = applyCanvasOpBlocks(blocks.slice(Math.max(0, startIndex)), 'ai', options)
   return { affectedIds: result.affectedIds, errors: result.errors, totalBlocks: blocks.length }
 }
 

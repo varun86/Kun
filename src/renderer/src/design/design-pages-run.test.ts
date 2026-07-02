@@ -74,7 +74,7 @@ describe('runDesignPages parallel fanout', () => {
 
   it('pre-creates all pages and sends one fanout turn for page generation', async () => {
     const sendMessage = vi.fn(async (prompt: string) => {
-      if (prompt.includes('PLAN a multi-page design')) {
+      if (prompt.includes('PLAN a multi-page')) {
         pushRuntimeTurn(prompt, [
           {
             kind: 'assistant',
@@ -148,5 +148,62 @@ describe('runDesignPages parallel fanout', () => {
     expect(projectDesignMdWrite?.content).toContain('IKUN community')
     expect(projectDesignMdWrite?.content).toContain('Join community')
     expect(projectDesignMdWrite?.content).toContain('../')
+  })
+
+  it('pre-creates app-target page drafts with mobile preview proportions and prototype links', async () => {
+    const sendMessage = vi.fn(async (prompt: string) => {
+      if (prompt.includes('PLAN a multi-page')) {
+        pushRuntimeTurn(prompt, [
+          {
+            kind: 'assistant',
+            id: 'assistant_plan_app',
+            text: '```pages\n[{"title":"Today","brief":"Mobile today screen with bottom tabs and a primary check-in action","primaryAction":"Check in","linksTo":["Stats"]},{"title":"Stats","brief":"Mobile stats screen with weekly trend and back navigation","primaryAction":"Review week","linksTo":["Today"]}]\n```',
+            createdAt
+          }
+        ])
+        return true
+      }
+      const labels = pageLabels(prompt)
+      pushRuntimeTurn(
+        prompt,
+        labels.map((artifactId, index) => ({
+          kind: 'tool' as const,
+          id: `tool_app_${artifactId}`,
+          summary: 'delegate_task',
+          status: 'success' as const,
+          detail: JSON.stringify({
+            label: `page:${artifactId}`,
+            childId: `child_app_${index + 1}`,
+            status: 'completed',
+            summary: `Finished ${artifactId}`
+          }),
+          meta: { toolName: 'delegate_task' }
+        }))
+      )
+      return true
+    })
+
+    await runDesignPages({
+      brief: 'Habit tracker app',
+      workspaceRoot: '/workspace',
+      sendMessage,
+      foundation: false,
+      designContext: { designTarget: 'app' }
+    })
+
+    const planPrompt = String(sendMessage.mock.calls[0]?.[0] ?? '')
+    const fanoutPrompt = String(sendMessage.mock.calls[1]?.[0] ?? '')
+    expect(planPrompt).toContain('multi-page mobile app prototype')
+    expect(planPrompt).toContain('390x844 phone frame')
+    expect(fanoutPrompt).toContain('Design target: App')
+    expect(fanoutPrompt).toContain('390x844 phone portrait')
+
+    const artifacts = useDesignWorkspaceStore.getState().artifacts
+    expect(artifacts).toHaveLength(2)
+    expect(artifacts.every((artifact) => artifact.node?.width === 300 && artifact.node.height === 640)).toBe(true)
+    expect(artifacts.every((artifact) => artifact.prototypeLinks?.length === 1)).toBe(true)
+    expect(artifacts.map((artifact) => artifact.prototypeLinks?.[0]?.href)).toEqual(
+      expect.arrayContaining([expect.stringMatching(/\.\.\/.+\/v1\.html/)])
+    )
   })
 })

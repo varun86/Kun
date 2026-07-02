@@ -1,5 +1,12 @@
 import { WRITE_PROTOTYPE_MAX_TEXT_CHARS } from '@shared/write-prototype'
-import { DESIGN_CRAFT_LINES, DESIGN_DELIVERY_LINES, formatDesignContextLines, type DesignContext } from './design-context'
+import {
+  DESIGN_CRAFT_LINES,
+  DESIGN_DELIVERY_LINES,
+  defaultFrameSizeForDesignTarget,
+  formatDesignContextLines,
+  normalizeDesignTarget,
+  type DesignContext
+} from './design-context'
 import { DESIGN_PAGES_MAX, DESIGN_PAGES_MIN } from './design-pages'
 import type { ScreenManifestEntry } from './design-turn-prompt'
 import type { DesignArtifact } from './design-types'
@@ -58,6 +65,30 @@ export function buildDesignSpecStub(brief: string): string {
   ].join('\n')
 }
 
+function formatFoundationTargetLines(
+  ctx: DesignContext | undefined,
+  phase: 'spec' | 'system'
+): string[] {
+  const target = normalizeDesignTarget(ctx?.designTarget)
+  const dims = defaultFrameSizeForDesignTarget(target)
+  if (phase === 'system') {
+    return target === 'app'
+      ? [
+          `Design-system target: App. Show the style guide through mobile app components for a ${dims.width}x${dims.height} phone frame: app bar, bottom navigation/tabs, touch-sized controls, list/detail cards, forms, and state feedback.`
+        ]
+      : [
+          `Design-system target: Web. Show the style guide through responsive web components for a ${dims.width}x${dims.height} desktop frame: header/nav, section layouts, cards, forms, tables/lists, and mobile breakpoint patterns.`
+        ]
+  }
+  return target === 'app'
+    ? [
+        `Design target: App. Plan a mobile app prototype around ${dims.width}x${dims.height} phone screens, app navigation, focused flows, touch targets, and screen-to-screen transitions.`
+      ]
+    : [
+        `Design target: Web. Plan a responsive web experience around a ${dims.width}x${dims.height} desktop page frame plus mobile breakpoints, site navigation, route structure, and section hierarchy.`
+      ]
+}
+
 /**
  * Spec turn: lay the foundation BEFORE any screen. The agent writes the project
  * `design.md` (concept, audience, visual direction, information architecture)
@@ -80,6 +111,7 @@ export function buildDesignSpecPrompt(options: {
     'Kun is asking you to LAY THE FOUNDATION for a multi-page design before any screen is built.',
     `Workspace: ${options.workspaceRoot}`,
     `Design brief file (already created — fill it in): ${options.designMdPath}`,
+    ...formatFoundationTargetLines(options.designContext, 'spec'),
     '',
     'Do TWO things this turn, in order:',
     `1) Write \`${options.designMdPath}\` as the project's design brief — the single source of truth the later steps follow. Cover: the product concept and who it is for; the visual direction (mood, the palette intent around the brand color, typography intent, layout & motion personality); an "Information architecture" section listing the ${DESIGN_PAGES_MIN}-${maxPages} distinct pages with one line each; a "State & responsiveness plan"; and implementation notes. Make real decisions — no placeholders.`,
@@ -88,7 +120,9 @@ export function buildDesignSpecPrompt(options: {
     'Rules:',
     `- Modify ONLY \`${options.designMdPath}\` this turn. Do NOT create HTML or any other file, and do NOT design screens yet.`,
     '- Each pages item is an object: { "title": "<short screen name ≤ 4 words>", "brief": "<self-contained paragraph: purpose, key sections, components, states>" }.',
-    '- Each page brief must name the page goal, primary action, key content/modules, relevant states, and responsive behavior.',
+    normalizeDesignTarget(options.designContext?.designTarget) === 'app'
+      ? '- Each page brief must name the app screen goal, primary touch action, key modules, relevant states, mobile behavior, and how it links to adjacent screens.'
+      : '- Each page brief must name the web page goal, primary action, key content/modules, relevant states, desktop/mobile responsive behavior, and how it links to adjacent pages.',
     '- Order by importance (primary screen first). Cover only genuinely distinct screens; if it is truly one screen, return one.'
   ]
   if (options.existingPages && options.existingPages.length > 0) {
@@ -105,7 +139,13 @@ export function buildDesignSpecPrompt(options: {
   // A trimmed delivery + craft reminder so the brief already biases toward quality.
   lines.push('', ...DESIGN_DELIVERY_LINES.slice(0, 5), '', ...DESIGN_CRAFT_LINES.slice(0, 4))
   const brief = options.brief.trim()
-  if (brief) lines.push('', 'App idea:', brief.slice(0, WRITE_PROTOTYPE_MAX_TEXT_CHARS))
+  if (brief) {
+    lines.push(
+      '',
+      normalizeDesignTarget(options.designContext?.designTarget) === 'app' ? 'App idea:' : 'Web brief:',
+      brief.slice(0, WRITE_PROTOTYPE_MAX_TEXT_CHARS)
+    )
+  }
   lines.push(
     '',
     'End your reply like:',
@@ -139,6 +179,7 @@ export function buildDesignSystemBoardPrompt(options: {
     ...(options.designMdPath ? [`Design brief to honor: ${options.designMdPath} (read it first).`] : []),
     `Reserved style-guide file: ${options.artifactRelativePath}`,
     `Design-system token file: ${options.designSystemMdPath}`,
+    ...formatFoundationTargetLines(options.designContext, 'system'),
     '',
     `Produce a single-file interactive HTML "style guide" board at \`${options.artifactRelativePath}\` that VISUALLY specifies:`,
     '- Color: the brand/accent color, a real neutral ramp, plus semantic success / warning / danger — every swatch labeled with its #hex.',

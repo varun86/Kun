@@ -1,4 +1,4 @@
-import { DESIGN_RESIZE_RESPONSIVE_LINES } from './design-context'
+import { DESIGN_RESIZE_RESPONSIVE_LINES, formatDesignContextLines, type DesignContext } from './design-context'
 
 export type DesignHtmlQualitySeverity = 'critical' | 'warning' | 'info'
 
@@ -67,6 +67,7 @@ const FLUID_MEDIA_RULE_RE =
   /\b(?:img|picture|video|canvas|svg|iframe)\b[^{]{0,160}{[^}]*(?:max-width\s*:\s*100%|width\s*:\s*100%)/i
 const VISUAL_MEDIA_TAG_RE =
   /<(?:img|picture|video|iframe|canvas)\b/i
+const PROTOTYPE_NAV_HASH_PREFIX = 'kun-proto-nav='
 const SPACING_DECLARATION_RE =
   /\b(?:padding|margin|gap|row-gap|column-gap)(?:-[a-z]+)?\s*:\s*([^;{}]+)/gi
 const SPACING_TOKEN_RE =
@@ -427,11 +428,117 @@ function normalizePath(path: string): string {
   return path.trim().replaceAll('\\', '/')
 }
 
+function isPageLikePrototypeTargetPath(value: string): boolean {
+  const path = normalizePath(value).replace(/[?#].*$/, '').replace(/^\/+/, '')
+  if (!path || path === '.' || path === '..') return false
+  return /\.(?:html|htm)$/i.test(path) || !/\.[a-z0-9]{2,8}$/i.test(path)
+}
+
+function extractPrototypeHashRouteTarget(target: string): string | null {
+  const raw = target.trim()
+  if (!raw.startsWith('#')) return null
+  let hash = raw.slice(1)
+  if (!hash) return null
+  try {
+    hash = decodeURIComponent(hash)
+  } catch {
+    // Keep the raw hash when it is not URI-encoded cleanly.
+  }
+  if (!hash || hash.startsWith(PROTOTYPE_NAV_HASH_PREFIX)) return null
+  if (hash.startsWith('!')) hash = hash.slice(1)
+  const routeLike =
+    /^(?:\/|\.\/|\.\.\/)/.test(hash) ||
+    /\.(?:html|htm)(?:[?#].*)?$/i.test(hash)
+  return routeLike && isPageLikePrototypeTargetPath(hash) ? hash : null
+}
+
 function normalizePrototypeTarget(target: string): string {
-  return normalizePath(target)
+  return normalizePath(extractPrototypeHashRouteTarget(target) ?? target)
     .replace(/[?#].*$/, '')
     .replace(/^\.\/+/, '')
     .replace(/^\/+/, '')
+    .replace(/\s+/g, ' ')
+    .toLowerCase()
+}
+
+function decodePrototypePathSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment)
+  } catch {
+    return segment
+  }
+}
+
+function normalizePrototypeRouteSlug(value: string): string {
+  return normalizePrototypeTarget(value.replace(/\.[a-z0-9]+$/i, '').replace(/[-_]+/g, ' '))
+}
+
+function prototypeTitleTokens(value: string): string[] {
+  return normalizePrototypeRouteSlug(value).split(' ').filter(Boolean)
+}
+
+function fuzzyPrototypeSlugMatch(query: string, candidate: string): boolean {
+  const queryTokens = prototypeTitleTokens(query)
+  const candidateTokens = prototypeTitleTokens(candidate)
+  if (queryTokens.length === 0 || candidateTokens.length === 0) return false
+  return (
+    queryTokens.every((token) => candidateTokens.includes(token)) ||
+    candidateTokens.every((token) => queryTokens.includes(token))
+  )
+}
+
+function prototypeRouteSlugCandidates(value: string): string[] {
+  const segments = normalizePath(extractPrototypeHashRouteTarget(value) ?? value)
+    .replace(/[?#].*$/, '')
+    .replace(/^\/+/, '')
+    .split('/')
+    .filter(Boolean)
+    .map(decodePrototypePathSegment)
+  if (segments.length === 0) return []
+  const last = segments[segments.length - 1]
+  const lastSlug = normalizePrototypeRouteSlug(last)
+  const sourceSegments =
+    /^(?:index|v\d+)$/i.test(lastSlug) && segments.length > 1
+      ? [segments[segments.length - 2]]
+      : [last]
+  const slugs = sourceSegments
+    .map(normalizePrototypeRouteSlug)
+    .filter((slug) => slug && !/^(?:index|v\d+)$/.test(slug))
+  return Array.from(new Set(slugs))
+}
+
+function prototypeExactTargetsForScreen(screen: DesignHtmlQualityAuditSibling): string[] {
+  return [screen.htmlPath, screen.prototypeHref ?? '', screen.name ?? '']
+    .map(normalizePrototypeTarget)
+    .filter(Boolean)
+}
+
+function prototypeRouteSlugsForScreen(screen: DesignHtmlQualityAuditSibling): string[] {
+  return Array.from(new Set([
+    ...prototypeRouteSlugCandidates(screen.htmlPath),
+    ...prototypeRouteSlugCandidates(screen.prototypeHref ?? ''),
+    normalizePrototypeRouteSlug(screen.name ?? '')
+  ].filter(Boolean)))
+}
+
+function matchingSiblingScreensForPrototypeTarget(
+  target: string,
+  siblingScreens: DesignHtmlQualityAuditSibling[] | undefined
+): DesignHtmlQualityAuditSibling[] {
+  const siblings = siblingScreens ?? []
+  if (siblings.length === 0) return []
+  const normalized = normalizePrototypeTarget(target)
+  const exactMatches = siblings.filter((screen) => prototypeExactTargetsForScreen(screen).includes(normalized))
+  if (exactMatches.length > 0) return exactMatches.length === 1 ? exactMatches : []
+  const targetSlugs = prototypeRouteSlugCandidates(target)
+  if (targetSlugs.length === 0) return []
+  const slugMatches = siblings.filter((screen) => {
+    const screenSlugs = prototypeRouteSlugsForScreen(screen)
+    return targetSlugs.some((slug) =>
+      screenSlugs.some((screenSlug) => slug === screenSlug || fuzzyPrototypeSlugMatch(slug, screenSlug))
+    )
+  })
+  return slugMatches.length === 1 ? slugMatches : []
 }
 
 function attributeValues(html: string, name: string): string[] {
@@ -443,6 +550,70 @@ function attributeValues(html: string, name: string): string[] {
     if (value) values.push(value)
   }
   return values
+}
+
+function onclickAttributeValues(html: string): string[] {
+  const values: string[] = []
+  const re = /\bonclick\s*=\s*(["'])([\s\S]*?)\1/gi
+  let match: RegExpExecArray | null
+  while ((match = re.exec(html))) {
+    const value = match[2]?.trim()
+    if (value) values.push(value)
+  }
+  return values
+}
+
+function onsubmitAttributeValues(html: string): string[] {
+  const values: string[] = []
+  const re = /\bonsubmit\s*=\s*(["'])([\s\S]*?)\1/gi
+  let match: RegExpExecArray | null
+  while ((match = re.exec(html))) {
+    const value = match[2]?.trim()
+    if (value) values.push(value)
+  }
+  return values
+}
+
+function prototypeTargetFromInlineHandler(handler: string | undefined): string | undefined {
+  const text = handler?.trim()
+  if (!text) return undefined
+  const historyMatch = text.match(/(?:window\.)?history\.(?:pushState|replaceState)\s*\(\s*[\s\S]*?,\s*(['"])[^'"]*\1\s*,\s*(['"])([^'"]+)\2\s*\)/i)
+  if (historyMatch?.[3]) return historyMatch[3].trim()
+  const assignMatch = text.match(/(?:window\.)?location\.(?:assign|replace)\s*\(\s*(['"])([^'"]+)\1\s*\)/i)
+  if (assignMatch?.[2]) return assignMatch[2].trim()
+  const hrefMatch = text.match(/(?:window\.)?location(?:\.href)?\s*=\s*(['"])([^'"]+)\1/i)
+  if (hrefMatch?.[2]) return hrefMatch[2].trim()
+  const hashMatch = text.match(/(?:window\.)?location\.hash\s*=\s*(['"])([^'"]+)\1/i)
+  return hashMatch?.[2]?.trim() || undefined
+}
+
+function isPrototypeBackInlineHandler(handler: string | undefined): boolean {
+  const text = handler?.trim()
+  if (!text) return false
+  return (
+    /(?:window\.)?history\.back\s*\(\s*\)/i.test(text) ||
+    /(?:window\.)?history\.go\s*\(\s*-\d+\s*\)/i.test(text)
+  )
+}
+
+function inlinePrototypeNavigationTargets(html: string): string[] {
+  return [
+    ...onclickAttributeValues(html),
+    ...onsubmitAttributeValues(html)
+  ]
+    .map(prototypeTargetFromInlineHandler)
+    .filter((value): value is string => Boolean(value))
+}
+
+function prototypeTargetAttributeValues(html: string): string[] {
+  return [
+    ...attributeValues(html, 'href'),
+    ...attributeValues(html, 'data-href'),
+    ...attributeValues(html, 'data-prototype-href'),
+    ...attributeValues(html, 'data-prototype-target'),
+    ...attributeValues(html, 'data-target'),
+    ...inlinePrototypeNavigationTargets(html)
+  ]
 }
 
 function tagMatches(html: string, tagName: string): string[] {
@@ -479,16 +650,25 @@ function isDeadHrefTarget(target: string | undefined, html?: string): boolean {
   if (!raw || raw === '#') return true
   if (/^javascript\s*:/i.test(raw)) return true
   if (lower === 'void(0)' || lower === 'javascript:void(0)' || lower === 'javascript:;') return true
+  if (extractPrototypeHashRouteTarget(raw)) return false
   if (raw.startsWith('#')) return html ? !hasHashTarget(html, raw) : false
   return false
 }
 
 function deadAnchorTags(html: string): string[] {
-  return tagMatches(html, 'a').filter((tag) => isDeadHrefTarget(attributeValue(tag, 'href'), html))
+  return tagMatches(html, 'a').filter((tag) =>
+    isDeadHrefTarget(attributeValue(tag, 'href'), html) &&
+    !prototypeTargetFromInlineHandler(onclickAttributeValues(tag)[0]) &&
+    !isPrototypeBackInlineHandler(onclickAttributeValues(tag)[0])
+  )
 }
 
 function hasUsefulAnchorTarget(html: string): boolean {
-  return tagMatches(html, 'a').some((tag) => !isDeadHrefTarget(attributeValue(tag, 'href'), html))
+  return tagMatches(html, 'a').some((tag) =>
+    !isDeadHrefTarget(attributeValue(tag, 'href'), html) ||
+    Boolean(prototypeTargetFromInlineHandler(onclickAttributeValues(tag)[0])) ||
+    isPrototypeBackInlineHandler(onclickAttributeValues(tag)[0])
+  )
 }
 
 function hasScriptedInteraction(html: string): boolean {
@@ -1529,9 +1709,13 @@ function inertFormTags(html: string): string[] {
   if (hasFormFeedbackScript(html)) return []
   if (tagMatches(html, 'button').some((tag) => attributeValue(tag, 'formaction'))) return []
   if (tagMatches(html, 'input').some((tag) => attributeValue(tag, 'formaction'))) return []
+  const prototypeSubmitAttrs = ['data-href', 'data-prototype-href', 'data-prototype-target', 'data-target']
+  if (tagMatches(html, 'button').some((tag) => prototypeSubmitAttrs.some((name) => attributeValue(tag, name)))) return []
+  if (tagMatches(html, 'input').some((tag) => prototypeSubmitAttrs.some((name) => attributeValue(tag, name)))) return []
   return tagMatches(html, 'form').filter((tag) => {
     const action = attributeValue(tag, 'action')
     if (action && !isDeadHrefTarget(action)) return false
+    if (prototypeSubmitAttrs.some((name) => attributeValue(tag, name))) return false
     return !attributeValue(tag, 'onsubmit')
   })
 }
@@ -3026,8 +3210,11 @@ function hasMultiItemPrototypeNavigationWithoutCurrentState(html: string): boole
     const linkTargets = attributeValues(block, 'href').filter((target) => !isDeadHrefTarget(target, html))
     const prototypeTargets = [
       ...linkTargets.filter((target) => /\.html(?:[?#].*)?$/i.test(target) || target.includes('.html?')),
+      ...attributeValues(block, 'data-href'),
+      ...attributeValues(block, 'data-prototype-href'),
       ...attributeValues(block, 'data-prototype-target'),
-      ...attributeValues(block, 'data-target')
+      ...attributeValues(block, 'data-target'),
+      ...inlinePrototypeNavigationTargets(block)
     ]
     const roleTabs = tagMatches(block, 'button').filter((tag) => (attributeValue(tag, 'role') ?? '').toLowerCase() === 'tab')
     return prototypeTargets.length + roleTabs.length >= 2 && !hasNavigationCurrentState(block)
@@ -3469,40 +3656,23 @@ function hasSiblingPrototypeNavigation(
   html: string,
   siblingScreens: DesignHtmlQualityAuditSibling[] | undefined
 ): boolean {
-  const expectedTargets = new Set(
-    (siblingScreens ?? [])
-      .flatMap((screen) => [screen.htmlPath, screen.prototypeHref ?? ''])
-      .map(normalizePrototypeTarget)
-      .filter(Boolean)
-  )
-  if (expectedTargets.size === 0) return true
-  const explicitTargets = [
-    ...attributeValues(html, 'href'),
-    ...attributeValues(html, 'data-prototype-target'),
-    ...attributeValues(html, 'data-target')
-  ].map(normalizePrototypeTarget)
-  if (explicitTargets.some((target) => expectedTargets.has(target))) return true
-  const lower = normalizePath(html).toLowerCase()
-  return [...expectedTargets].some((target) => target.length > 2 && lower.includes(target.toLowerCase()))
+  if ((siblingScreens?.length ?? 0) === 0) return true
+  return prototypeTargetAttributeValues(html)
+    .some((target) => matchingSiblingScreensForPrototypeTarget(target, siblingScreens).length > 0)
 }
 
 function linkedSiblingPrototypeTargetCount(
   html: string,
   siblingScreens: DesignHtmlQualityAuditSibling[] | undefined
 ): number {
-  const expectedByScreen = (siblingScreens ?? [])
-    .map((screen) => [screen.htmlPath, screen.prototypeHref ?? ''].map(normalizePrototypeTarget).filter(Boolean))
-    .filter((targets) => targets.length > 0)
-  if (expectedByScreen.length === 0) return 0
-  const explicitTargets = [
-    ...attributeValues(html, 'href'),
-    ...attributeValues(html, 'data-prototype-target'),
-    ...attributeValues(html, 'data-target')
-  ].map(normalizePrototypeTarget)
-  const lower = normalizePath(html).toLowerCase()
-  return expectedByScreen.filter((targets) =>
-    targets.some((target) => explicitTargets.includes(target) || (target.length > 2 && lower.includes(target.toLowerCase())))
-  ).length
+  if ((siblingScreens?.length ?? 0) === 0) return 0
+  const matched = new Set<DesignHtmlQualityAuditSibling>()
+  for (const target of prototypeTargetAttributeValues(html)) {
+    for (const screen of matchingSiblingScreensForPrototypeTarget(target, siblingScreens)) {
+      matched.add(screen)
+    }
+  }
+  return matched.size
 }
 
 const runtimeQualityFindings = new Map<string, DesignHtmlQualityFinding[]>()
@@ -3770,11 +3940,38 @@ export function buildDesignRuntimeQualityAuditScript(): string {
       push('runtime-fixed-desktop-frame', 'warning', 'The rendered page appears locked to a desktop-sized canvas.', 'Replace fixed desktop widths or viewport-height overflow locks with fluid max-widths, wrapping grids, and responsive section heights.')
     }
     const interactive = [...document.querySelectorAll('button,a,input,select,textarea,[role="button"],[role="link"],[tabindex]:not([tabindex="-1"])')].filter(visible)
+    const isPageLikePrototypePath = (pathValue) => {
+      const path = String(pathValue || '').trim().replace(/\\\\/g, '/').replace(/[?#].*$/, '').replace(/^\\/+/, '')
+      if (!path || path === '.' || path === '..') return false
+      return /\\.(?:html|htm)$/i.test(path) || !/\\.[a-z0-9]{2,8}$/i.test(path)
+    }
+    const hashRouteHref = (routeValue) => {
+      let hash = ''
+      const routeRaw = String(routeValue || '').trim()
+      if (!routeRaw.startsWith('#')) return ''
+      hash = routeRaw.slice(1)
+      if (!hash) return ''
+      try {
+        hash = decodeURIComponent(hash)
+      } catch {}
+      if (!hash || hash.startsWith('${PROTOTYPE_NAV_HASH_PREFIX}')) return ''
+      if (hash.startsWith('!')) hash = hash.slice(1)
+      const routeLike = /^(?:\\/|\\.\\/|\\.\\.\\/)/.test(hash) || /\\.(?:html|htm)(?:[?#].*)?$/i.test(hash)
+      return routeLike && isPageLikePrototypePath(hash) ? hash : ''
+    }
+    const isPrototypeBackHandler = (handler) => {
+      const text = String(handler || '').trim()
+      if (!text) return false
+      return /(?:window\\.)?history\\.back\\s*\\(\\s*\\)/i.test(text) ||
+        /(?:window\\.)?history\\.go\\s*\\(\\s*-\\d+\\s*\\)/i.test(text)
+    }
     const deadHref = (el) => {
       const raw = (el.getAttribute('href') || '').trim()
+      if (isPrototypeBackHandler(el.getAttribute('onclick'))) return false
       if (!raw || raw === '#') return true
       if (/^javascript\s*:/i.test(raw)) return true
       if (raw.startsWith('#')) {
+        if (hashRouteHref(raw)) return false
         const id = raw.slice(1)
         return !document.getElementById(id) && document.getElementsByName(id).length === 0
       }
@@ -3784,17 +3981,55 @@ export function buildDesignRuntimeQualityAuditScript(): string {
       .filter(visible)
       .filter(deadHref)
     if (deadLinks.length > 0) {
-      push('runtime-dead-links', 'warning', deadLinks.length + ' visible link target(s) are empty, "#", or javascript-only.', 'Replace dead links with real prototype hrefs, valid section anchors, or buttons that implement local UI feedback.')
+      push('runtime-dead-links', 'warning', deadLinks.length + ' visible link target(s) are empty, "#", or javascript-only.', 'Replace dead links with real prototype hrefs, valid section anchors, Back/Previous controls that call history.back(), or buttons that implement local UI feedback.')
     }
+    const isLocalPrototypeRouteHref = (href) => {
+      const raw = String(href || '').trim()
+      if (!raw || raw.startsWith('?')) return false
+      if (/^(?:javascript|mailto|tel|data):/i.test(raw)) return false
+      if (raw.startsWith('#')) return Boolean(hashRouteHref(raw))
+      if (/^[a-z][a-z\\d+.-]*:/i.test(raw)) {
+        try {
+          const url = new URL(raw, document.baseURI)
+          const base = new URL(document.baseURI)
+          if (url.protocol !== base.protocol || url.host !== base.host) return false
+          return /\\.html(?:[?#].*)?$/i.test(url.pathname) || !/\\.[a-z0-9]{2,8}$/i.test(url.pathname)
+        } catch {
+          return false
+        }
+      }
+      const path = raw.replace(/[?#].*$/, '')
+      if (!path || path === '.' || path === '..') return false
+      return isPageLikePrototypePath(path)
+    }
+    const hrefFromInlineHandler = (handler) => {
+      const text = String(handler || '').trim()
+      if (!text) return ''
+      const historyMatch = text.match(/(?:window\\.)?history\\.(?:pushState|replaceState)\\s*\\(\\s*[\\s\\S]*?,\\s*(['"])[^'"]*\\1\\s*,\\s*(['"])([^'"]+)\\2\\s*\\)/i)
+      if (historyMatch) return historyMatch[3] || ''
+      const assignMatch = text.match(/(?:window\\.)?location\\.(?:assign|replace)\\s*\\(\\s*(['"])([^'"]+)\\1\\s*\\)/i)
+      if (assignMatch) return assignMatch[2] || ''
+      const hrefMatch = text.match(/(?:window\\.)?location(?:\\.href)?\\s*=\\s*(['"])([^'"]+)\\1/i)
+      if (hrefMatch) return hrefMatch[2] || ''
+      const hashMatch = text.match(/(?:window\\.)?location\\.hash\\s*=\\s*(['"])([^'"]+)\\1/i)
+      return hashMatch ? hashMatch[2] || '' : ''
+    }
+    const prototypeHrefFromElement = (el) =>
+      el.getAttribute('data-prototype-href') ||
+      el.getAttribute('data-href') ||
+      el.getAttribute('data-prototype-target') ||
+      el.getAttribute('data-target') ||
+      el.getAttribute('href') ||
+      hrefFromInlineHandler(el.getAttribute('onclick'))
     const prototypeNavigationsWithoutCurrent = [...document.querySelectorAll('nav,[role="navigation"]')]
       .filter(visible)
       .filter((nav) => {
-        const prototypeLinks = [...nav.querySelectorAll('a,[data-prototype-target],[data-target],[role="tab"]')]
+        const prototypeLinks = [...nav.querySelectorAll('a,[data-href],[data-prototype-href],[data-prototype-target],[data-target],[onclick],[role="tab"]')]
           .filter(visible)
           .filter((el) => {
             const role = (el.getAttribute('role') || '').toLowerCase()
-            const href = (el.getAttribute('href') || '').trim()
-            return role === 'tab' || el.hasAttribute('data-prototype-target') || el.hasAttribute('data-target') || /\.html(?:[?#].*)?$/i.test(href) || href.includes('.html?')
+            const href = prototypeHrefFromElement(el)
+            return role === 'tab' || isLocalPrototypeRouteHref(href)
           })
         if (prototypeLinks.length < 2) return false
         return !nav.querySelector('[aria-current]:not([aria-current="false"]),[aria-selected="true"],[data-state="active"],[data-state="current"],[data-state="selected"],.active,.current,.selected,.is-active,.is-current,.is-selected')
@@ -3845,11 +4080,12 @@ export function buildDesignRuntimeQualityAuditScript(): string {
       const action = (form.getAttribute('action') || '').trim()
       if (action && action !== '#' && !/^javascript\s*:/i.test(action)) return false
       if (form.getAttribute('onsubmit')) return false
+      if (form.getAttribute('data-href') || form.getAttribute('data-prototype-href') || form.getAttribute('data-prototype-target') || form.getAttribute('data-target')) return false
       if (hasFormScript) return false
-      return !form.querySelector('button[formaction],input[formaction]')
+      return !form.querySelector('button[formaction],input[formaction],button[data-href],input[data-href],button[data-prototype-href],input[data-prototype-href],button[data-prototype-target],input[data-prototype-target],button[data-target],input[data-target]')
     })
     if (inertForms.length > 0) {
-      push('runtime-inert-form-submission', 'warning', inertForms.length + ' visible form(s) have no submit destination or local feedback.', 'Add action/formaction, an onsubmit handler, or visible prototype feedback for validation, loading, success, error, or toast states.')
+      push('runtime-inert-form-submission', 'warning', inertForms.length + ' visible form(s) have no submit destination or local feedback.', 'Add action/formaction, data-prototype-target/data-href, an onsubmit handler, or visible prototype feedback for validation, loading, success, error, or toast states.')
     }
     const hasFieldLabel = (el) => {
       if (el.getAttribute('aria-label') || el.getAttribute('aria-labelledby') || el.getAttribute('title')) return true
@@ -6843,7 +7079,7 @@ export function auditDesignHtmlQuality(input: DesignHtmlQualityAuditInput): Desi
       code: 'dead-link-targets',
       severity: 'warning',
       message: 'Some anchors use empty, "#", missing, or javascript-only href targets.',
-      suggestion: 'Replace dead anchors with real prototype hrefs, valid section anchors, or semantic buttons with local feedback.'
+      suggestion: 'Replace dead anchors with real prototype hrefs, valid section anchors, Back/Previous controls that call history.back(), or semantic buttons with local feedback.'
     })
   }
 
@@ -6953,7 +7189,7 @@ export function auditDesignHtmlQuality(input: DesignHtmlQualityAuditInput): Desi
       code: 'inert-form-submission',
       severity: 'warning',
       message: 'Some forms have no detectable submit destination or local feedback.',
-      suggestion: 'Add a real action/formaction, onsubmit handler, or scripted prototype feedback such as validation, loading, success, error, or toast states.'
+      suggestion: 'Add a real action/formaction, data-prototype-target/data-href, onsubmit handler, or scripted prototype feedback such as validation, loading, success, error, or toast states.'
     })
   }
 
@@ -6962,7 +7198,7 @@ export function auditDesignHtmlQuality(input: DesignHtmlQualityAuditInput): Desi
       code: 'missing-prototype-navigation',
       severity: 'warning',
       message: 'This multi-screen project page does not link to any sibling screen.',
-      suggestion: 'Add real anchors for relevant nav items, tabs, cards, or CTAs using the provided prototype hrefs.'
+      suggestion: 'Add clickable prototype routes for relevant nav items, tabs, cards, or CTAs using `<a href>`, `data-href`, `data-prototype-href`, or `data-prototype-target` with the provided hrefs or exact screen titles; use history.back() only for Back/Previous controls.'
     })
   }
 
@@ -6971,7 +7207,7 @@ export function auditDesignHtmlQuality(input: DesignHtmlQualityAuditInput): Desi
       code: 'weak-prototype-navigation-coverage',
       severity: 'warning',
       message: 'This multi-screen project page links to only one sibling screen.',
-      suggestion: 'Add prototype links to multiple relevant sibling pages in the nav, tabs, breadcrumbs, cards, or primary/secondary actions so the project can be browsed as a connected prototype.'
+      suggestion: 'Add prototype links to multiple relevant sibling pages in the nav, tabs, breadcrumbs, cards, or primary/secondary actions using `<a href>`, `data-href`, `data-prototype-href`, or `data-prototype-target` so the project can be browsed as a connected prototype.'
     })
   }
 
@@ -6980,7 +7216,7 @@ export function auditDesignHtmlQuality(input: DesignHtmlQualityAuditInput): Desi
       code: 'missing-navigation-landmark',
       severity: 'warning',
       message: 'This multi-screen project page has no navigation landmark.',
-      suggestion: 'Add a consistent nav, tabs, breadcrumb, or page switcher with real prototype links to related screens.'
+      suggestion: 'Add a consistent nav, tabs, breadcrumb, or page switcher with real prototype routes to related screens.'
     })
   }
 
@@ -7263,9 +7499,9 @@ function designQualityRepairDirective(code: string): string | undefined {
     case 'missing-navigation-landmark':
     case 'missing-navigation-current-state':
     case 'missing-interaction-behavior':
-      return 'Prototype behavior: convert dead anchors and visual-only controls into real links, section anchors, form feedback, filters, expanded panels, toasts, or sibling-screen navigation with a visible/accessible current-page state.'
+      return 'Prototype behavior: convert dead anchors and visual-only controls into real routes (`<a href>`, `data-href`, `data-prototype-href`, or `data-prototype-target` on button-like controls), Back/Previous controls that call `history.back()` / `history.go(-1)`, section anchors, form feedback, filters, expanded panels, toasts, or sibling-screen navigation with a visible/accessible current-page state.'
     case 'weak-prototype-navigation-coverage':
-      return 'Prototype navigation coverage: when several sibling screens exist, link to multiple relevant pages from nav items, tabs, breadcrumbs, cards, or CTAs using the provided prototype hrefs, and keep a visible current-page state.'
+      return 'Prototype navigation coverage: when several sibling screens exist, link to multiple relevant pages from nav items, tabs, breadcrumbs, cards, or CTAs using the provided prototype hrefs or exact screen titles (`<a href>` for links, `data-href` / `data-prototype-href` / `data-prototype-target` for button-like controls), and keep a visible current-page state.'
     case 'weak-tab-current-state':
       return 'Tab state: give tabs, segmented controls, and view switchers a visible and accessible selected state with aria-selected, aria-current, data-state="active", or active/current styling.'
     case 'generic-tab-labels':
@@ -7315,11 +7551,13 @@ function designQualityRepairDirective(code: string): string | undefined {
 
 export function buildDesignHtmlQualityRepairPrompt(
   findings: DesignHtmlQualityFinding[],
-  mode: 'auto' | 'manual'
+  mode: 'auto' | 'manual',
+  designContext?: DesignContext
 ): string {
   const repairFindings = mergeDesignHtmlQualityFindings(findings)
   const issueLimit = mode === 'auto' ? 3 : 6
   const directiveLimit = 8
+  const designContextLines = designContext ? formatDesignContextLines(designContext) : []
   const directives = repairFindings.reduce<string[]>((items, finding) => {
     const directive = designQualityRepairDirective(finding.code)
     if (directive && !items.includes(directive)) items.push(directive)
@@ -7334,6 +7572,7 @@ export function buildDesignHtmlQualityRepairPrompt(
       ? '自动修复这个页面预览中的设计质量问题。'
       : '修复这个页面预览中的设计质量问题。',
     '只修改当前选中的 screen/page；保留页面意图、品牌风格和已有可用内容，不要整页重写。',
+    ...(designContextLines.length > 0 ? ['', ...designContextLines] : []),
     '',
     '优先修复以下审计项：',
     ...issueSummary,

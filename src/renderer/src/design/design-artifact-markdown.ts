@@ -1,4 +1,5 @@
 import type { DesignArtifact } from './design-types'
+import { formatDesignContextLines, type DesignContext } from './design-context'
 
 type SelectedContextLine = {
   kind?: string
@@ -10,6 +11,7 @@ export type BuildDesignArtifactMarkdownOptions = {
   artifact: DesignArtifact
   designMdPath: string
   currentTurn: string
+  designContext?: DesignContext
   selectedContext?: readonly SelectedContextLine[]
   updatedAt?: string
 }
@@ -36,6 +38,11 @@ function formatSelectedContext(context: readonly SelectedContextLine[] | undefin
       return `- ${prefix}${fallback(item.label, 'Selection')}${detail}`
     })
     .join('\n')
+}
+
+function formatPersistedDesignContext(ctx: DesignContext | undefined): string {
+  const lines = formatDesignContextLines(ctx).map((line) => line.trimEnd())
+  return lines.length > 0 ? lines.join('\n') : '- Target: Web'
 }
 
 export function buildDesignArtifactMarkdown(options: BuildDesignArtifactMarkdownOptions): string {
@@ -71,6 +78,10 @@ ${fallback(currentTurn, 'No current turn recorded.')}
 ## Selected Context
 
 ${formatSelectedContext(options.selectedContext)}
+
+## Design Context
+
+${formatPersistedDesignContext(options.designContext)}
 
 ## Visual Direction
 

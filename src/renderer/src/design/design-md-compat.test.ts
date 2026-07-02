@@ -73,6 +73,7 @@ describe('design-md-compat', () => {
       title: 'Ops app',
       brief: 'An operations workspace',
       designContext: {
+        designTarget: 'app',
         brandColor: '#2563eb',
         designSystemPreset: 'shadcn',
         tone: ['专业']
@@ -100,12 +101,36 @@ describe('design-md-compat', () => {
     expect(markdown).toContain('# DESIGN.md: Ops app')
     expect(markdown).toContain('Project brief: `.kun-design/doc/design.md`')
     expect(markdown).toContain('Preset: shadcn/ui')
+    expect(markdown).toContain('Target: App')
     expect(markdown).toContain('Brand color anchor: #2563eb')
     expect(markdown).toContain('| `brand/primary` | color | #2563eb |')
     expect(markdown).toContain('**Insight card**')
-    expect(markdown).toContain('**Home**')
+    expect(markdown).toContain('**Home** (home): HTML `.kun-design/doc/home/v1.html`; frame 390x844')
     expect(markdown).toContain('direction: Ops direction')
     expect(markdown).toContain('Open details -> Details (details) via `../details/v1.html`')
+  })
+
+  it('exports the prototype frame size each screen will use', () => {
+    const markdown = buildStitchDesignMarkdown({
+      title: 'Web workspace',
+      designContext: { designTarget: 'web' },
+      artifacts: [
+        artifact('dashboard', 'Dashboard'),
+        artifact('wide', 'Wide review', {
+          node: {
+            x: 0,
+            y: 0,
+            width: 1440,
+            height: 900,
+            sizeMode: 'manual'
+          }
+        })
+      ],
+      updatedAt: now
+    })
+
+    expect(markdown).toContain('**Dashboard** (dashboard): HTML `.kun-design/doc/dashboard/v1.html`; frame 1280x800')
+    expect(markdown).toContain('**Wide review** (wide): HTML `.kun-design/doc/wide/v1.html`; frame 1440x900')
   })
 
   it('parses exported markdown into importable guideline sections', () => {
@@ -128,6 +153,7 @@ describe('design-md-compat', () => {
       title: 'Ops app',
       brief: 'An operations workspace',
       designContext: {
+        designTarget: 'app',
         brandColor: '#2563eb',
         designSystemPreset: 'shadcn'
       },
@@ -150,6 +176,7 @@ describe('design-md-compat', () => {
     const imported = importStitchDesignMarkdown(markdown)
 
     expect(imported?.contextPatch.brandColor).toBe('#2563eb')
+    expect(imported?.contextPatch.designTarget).toBe('app')
     expect(imported?.contextPatch.designSystemPreset).toBe('shadcn')
     expect(imported?.contextPatch.designGuidelines).toContain('Imported from DESIGN.md: Ops app')
     expect(imported?.tokens).toEqual([
@@ -163,5 +190,38 @@ describe('design-md-compat', () => {
       }
     ])
     expect(importStitchDesignMarkdown('')).toBeNull()
+  })
+
+  it('imports flexible target labels from external design guides', () => {
+    const mobileGuide = [
+      '# Mobile guide',
+      '',
+      '## Design Context',
+      '',
+      '- Design target: mobile app',
+      '- Brand color anchor: #14b8a6',
+      '',
+      '## Product Brief',
+      '',
+      'Design a field operations app.'
+    ].join('\n')
+    const webGuide = [
+      '# Web guide',
+      '',
+      '## Design Context',
+      '',
+      '| Platform | Responsive web app |',
+      '| Preset | shadcn/ui |',
+      '',
+      '## Product Brief',
+      '',
+      'Design a browser-based admin workspace.'
+    ].join('\n')
+
+    expect(importStitchDesignMarkdown(mobileGuide)?.contextPatch).toMatchObject({
+      designTarget: 'app',
+      brandColor: '#14b8a6'
+    })
+    expect(importStitchDesignMarkdown(webGuide)?.contextPatch.designTarget).toBe('web')
   })
 })

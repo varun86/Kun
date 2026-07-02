@@ -30,6 +30,8 @@ import { DesignContextPopover } from '../DesignContextPopover'
 
 type Props = {
   workspaceRoot: string
+  surface?: 'design' | 'code'
+  designTargetDisabled?: boolean
   prototypePlayable?: boolean
   onOpenPrototypePlayer?: () => void
   onOpenAgentSettings?: () => void
@@ -40,12 +42,14 @@ type ToolButton = {
   id: CanvasTool
   icon: typeof MousePointer2
   labelKey: string
+  codeLabelKey?: string
 }
 
 const tools: ToolButton[] = [
   { id: 'select', icon: MousePointer2, labelKey: 'canvasToolSelect' },
   { id: 'screen', icon: Monitor, labelKey: 'canvasToolScreen' },
   { id: 'frame', icon: Frame, labelKey: 'canvasToolFrame' },
+  { id: 'image', icon: Sparkles, labelKey: 'canvasToolImage', codeLabelKey: 'codeCanvasToolImage' },
   { id: 'rect', icon: Square, labelKey: 'canvasToolRect' },
   { id: 'ellipse', icon: Circle, labelKey: 'canvasToolEllipse' },
   { id: 'text', icon: TypeIcon, labelKey: 'canvasToolText' },
@@ -57,6 +61,8 @@ const tools: ToolButton[] = [
 
 function CanvasToolbarInner({
   workspaceRoot,
+  surface = 'design',
+  designTargetDisabled = false,
   prototypePlayable = false,
   onOpenPrototypePlayer,
   onOpenAgentSettings,
@@ -70,6 +76,10 @@ function CanvasToolbarInner({
   const setCanvasAssistantOpen = useDesignWorkspaceStore((s) => s.setCanvasAssistantOpen)
   const [imageImportBusy, setImageImportBusy] = useState(false)
   const [contextOpen, setContextOpen] = useState(false)
+  const designSurface = surface === 'design'
+  const visibleTools = designSurface
+    ? tools
+    : tools.filter((tool) => tool.id !== 'screen')
 
   const requestCanvasCritique = useCallback((): void => {
     const doc = useCanvasShapeStore.getState().document
@@ -110,84 +120,96 @@ function CanvasToolbarInner({
   const btnInactive =
     'text-ds-muted hover:bg-ds-hover hover:text-ds-ink dark:hover:bg-white/10'
   const divider = 'my-1 h-px w-7 shrink-0 bg-ds-border-muted/80'
+  const prototypePlayDisabled = !prototypePlayable || !onOpenPrototypePlayer
+  const prototypePlayLabel = prototypePlayable
+    ? t('designPrototypePlay')
+    : t('designPrototypePlayUnavailable')
 
   return (
     <div className="relative pointer-events-auto">
       <div className="flex flex-col items-center gap-1 rounded-full border border-ds-border bg-white/82 px-1.5 py-1.5 shadow-[0_16px_42px_rgba(20,47,95,0.13)] backdrop-blur-2xl dark:bg-ds-card/84 dark:shadow-none">
-        {tools.map((tool) => (
-          <button
-            key={tool.id}
-            type="button"
-            className={`${iconBtnBase} ${activeTool === tool.id ? btnActive : btnInactive}`}
-            onClick={() => setActiveTool(tool.id)}
-            title={t(tool.labelKey)}
-            aria-label={t(tool.labelKey)}
-          >
-            <tool.icon className="h-4 w-4" strokeWidth={1.9} />
-          </button>
-        ))}
+        {visibleTools.map((tool) => {
+          const label = t(surface === 'code' && tool.codeLabelKey ? tool.codeLabelKey : tool.labelKey)
+          return (
+            <button
+              key={tool.id}
+              type="button"
+              className={`${iconBtnBase} ${activeTool === tool.id ? btnActive : btnInactive}`}
+              onClick={() => setActiveTool(tool.id)}
+              title={label}
+              aria-label={label}
+            >
+              <tool.icon className="h-4 w-4" strokeWidth={1.9} />
+            </button>
+          )
+        })}
 
         <button
           type="button"
           className={`${iconBtnBase} ${btnInactive}`}
           onClick={importImage}
           disabled={imageImportBusy}
-          title={t('canvasToolUploadImage')}
-          aria-label={t('canvasToolUploadImage')}
+          title={t(surface === 'code' ? 'codeCanvasToolUploadImage' : 'canvasToolUploadImage')}
+          aria-label={t(surface === 'code' ? 'codeCanvasToolUploadImage' : 'canvasToolUploadImage')}
         >
           <ImagePlus className="h-4 w-4" strokeWidth={1.9} />
         </button>
 
-        <div className={divider} />
+        {designSurface ? (
+          <>
+            <div className={divider} />
 
-        <button
-          type="button"
-          className={`${iconBtnBase} ${contextOpen ? btnActive : btnInactive}`}
-          onClick={() => setContextOpen((open) => !open)}
-          title={t('designContextLabel')}
-          aria-label={t('designContextLabel')}
-        >
-          <Palette className="h-4 w-4" strokeWidth={1.9} />
-        </button>
+            <button
+              type="button"
+              className={`${iconBtnBase} ${contextOpen ? btnActive : btnInactive}`}
+              onClick={() => setContextOpen((open) => !open)}
+              title={t('designContextLabel')}
+              aria-label={t('designContextLabel')}
+            >
+              <Palette className="h-4 w-4" strokeWidth={1.9} />
+            </button>
 
-        <button
-          type="button"
-          className={`${iconBtnBase} ${btnInactive}`}
-          onClick={requestCanvasCritique}
-          title={t('canvasToolCritique')}
-          aria-label={t('canvasToolCritique')}
-        >
-          <ShieldCheck className="h-4 w-4" strokeWidth={1.9} />
-        </button>
+            <button
+              type="button"
+              className={`${iconBtnBase} ${btnInactive}`}
+              onClick={requestCanvasCritique}
+              title={t('canvasToolCritique')}
+              aria-label={t('canvasToolCritique')}
+            >
+              <ShieldCheck className="h-4 w-4" strokeWidth={1.9} />
+            </button>
 
-        <button
-          type="button"
-          className={`${iconBtnBase} ${btnInactive}`}
-          onClick={() => setCanvasAssistantOpen(true)}
-          title={t('canvasToolAssistant')}
-          aria-label={t('canvasToolAssistant')}
-        >
-          <Sparkles className="h-4 w-4" strokeWidth={1.9} />
-        </button>
+            <button
+              type="button"
+              className={`${iconBtnBase} ${btnInactive}`}
+              onClick={() => setCanvasAssistantOpen(true)}
+              title={t('canvasToolAssistant')}
+              aria-label={t('canvasToolAssistant')}
+            >
+              <Sparkles className="h-4 w-4" strokeWidth={1.9} />
+            </button>
 
-        <button
-          type="button"
-          className={`${iconBtnBase} ${btnInactive}`}
-          onClick={onOpenPrototypePlayer}
-          disabled={!prototypePlayable || !onOpenPrototypePlayer}
-          title={t('designPrototypePlay')}
-          aria-label={t('designPrototypePlay')}
-        >
-          <Play className="h-4 w-4" strokeWidth={1.9} />
-        </button>
+            <button
+              type="button"
+              className={`${iconBtnBase} ${btnInactive}`}
+              onClick={onOpenPrototypePlayer}
+              disabled={prototypePlayDisabled}
+              title={prototypePlayLabel}
+              aria-label={prototypePlayLabel}
+            >
+              <Play className="h-4 w-4" strokeWidth={1.9} />
+            </button>
+          </>
+        ) : null}
       </div>
-      {contextOpen ? (
+      {designSurface && contextOpen ? (
         <div className="absolute right-14 top-1/2 -translate-y-1/2">
           <DesignContextPopover
             open={contextOpen}
             onClose={() => setContextOpen(false)}
             onOpenSettings={onOpenAgentSettings}
             titleKey="designContextLabel"
+            designTargetDisabled={designTargetDisabled}
           />
         </div>
       ) : null}

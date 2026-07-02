@@ -7,6 +7,10 @@ export function canvasDocPath(artifactId: string, baseDir: string = DESIGN_DIR):
   return `${baseDir}/${artifactId}/canvas.json`
 }
 
+export function canvasDocumentKey(workspaceRoot: string, artifactId: string, baseDir?: string): string {
+  return [workspaceRoot, canvasDocPath(artifactId, baseDir)].join('\0')
+}
+
 export function serializeCanvasDocument(doc: CanvasDocument): string {
   return `${JSON.stringify(doc, null, 2)}\n`
 }
@@ -138,7 +142,11 @@ export function parseCanvasDocument(raw: string): CanvasDocument | null {
   return { version: 2, rootId, objects }
 }
 
-let _saveTimer: ReturnType<typeof setTimeout> | null = null
+const _saveTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+function canvasSaveKey(workspaceRoot: string, artifactId: string, baseDir: string | undefined): string {
+  return canvasDocumentKey(workspaceRoot, artifactId, baseDir)
+}
 
 export function persistCanvasDocument(
   workspaceRoot: string,
@@ -148,9 +156,11 @@ export function persistCanvasDocument(
 ): void {
   if (!workspaceRoot || typeof window.kunGui?.writeWorkspaceFile !== 'function') return
 
-  if (_saveTimer) clearTimeout(_saveTimer)
-  _saveTimer = setTimeout(() => {
-    _saveTimer = null
+  const key = canvasSaveKey(workspaceRoot, artifactId, baseDir)
+  const existingTimer = _saveTimers.get(key)
+  if (existingTimer) clearTimeout(existingTimer)
+  const timer = setTimeout(() => {
+    _saveTimers.delete(key)
     void window.kunGui
       .writeWorkspaceFile({
         path: canvasDocPath(artifactId, baseDir),
@@ -159,6 +169,7 @@ export function persistCanvasDocument(
       })
       .catch(() => undefined)
   }, 600)
+  _saveTimers.set(key, timer)
 }
 
 export async function loadCanvasDocument(

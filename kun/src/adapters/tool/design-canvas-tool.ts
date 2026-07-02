@@ -30,6 +30,15 @@ type DesignScreenSpec = {
 const SHOULD_ADVERTISE_DESIGN_TOOL = (context: { guiDesignCanvas?: boolean }) =>
   context.guiDesignCanvas === true
 
+const DEVICE_PRESET_DESCRIPTION =
+  'Optional explicit screen preset. Omit it unless the user asks for a different device; the renderer follows the current Design target (Web -> desktop 1280x800, App -> mobile 390x844).'
+
+const SCREEN_DIMENSION_DESCRIPTION =
+  'Optional explicit screen dimension. Omit it unless the user asks for a custom size; omitted dimensions follow the current Design target together with devicePreset.'
+
+const DESIGN_TEMPLATE_DESCRIPTION =
+  'Optional template family. Omit it to follow the current Design target (Web -> saas/web components, App -> mobile/app components).'
+
 export function buildDesignCanvasLocalTools(): LocalTool[] {
   return [
     createDesignCanvasTool(),
@@ -45,7 +54,7 @@ export function createDesignCanvasTool(): LocalTool {
   return LocalToolHost.defineTool({
     name: DESIGN_CANVAS_TOOL_NAME,
     description: [
-      'Create or update the GUI design canvas. Use this only when Kun is in a design canvas turn.',
+      'Create or update the active GUI canvas: Design mode canvas or Code-mode sidebar whiteboard. Use this only when Kun is in a canvas turn.',
       'The renderer applies the returned operations to the active canvas; do not emit markdown code blocks for canvas operations.'
     ].join(' '),
     toolKind: 'tool_call',
@@ -58,7 +67,7 @@ export function createDesignCanvasTool(): LocalTool {
           type: 'string',
           enum: ['create_board', 'add_screen', 'update_shapes'],
           description:
-            'create_board is optional/no-op; add_screen creates an HTML screen frame; update_shapes applies vector/image shape ops.'
+            'create_board is optional/no-op; add_screen creates a screen/frame operation (Design mode may generate linked HTML, Code whiteboard creates an editable frame); update_shapes applies vector/image shape ops.'
         },
         title: {
           type: 'string',
@@ -66,19 +75,20 @@ export function createDesignCanvasTool(): LocalTool {
         },
         name: {
           type: 'string',
-          description: 'Screen name for add_screen.'
+          description: 'Screen/frame name for add_screen.'
         },
         brief: {
           type: 'string',
-          description: 'Self-contained screen brief for add_screen; the renderer uses it for follow-up HTML generation.'
+          description: 'Self-contained screen/frame brief for add_screen. Design mode uses it for follow-up HTML generation; Code whiteboard keeps the result as editable canvas shapes.'
         },
         x: { type: 'number' },
         y: { type: 'number' },
-        width: { type: 'number' },
-        height: { type: 'number' },
+        width: { type: 'number', description: SCREEN_DIMENSION_DESCRIPTION },
+        height: { type: 'number', description: SCREEN_DIMENSION_DESCRIPTION },
         devicePreset: {
           type: 'string',
-          enum: ['mobile', 'tablet', 'desktop']
+          enum: ['mobile', 'tablet', 'desktop'],
+          description: DEVICE_PRESET_DESCRIPTION
         },
         ops: {
           description:
@@ -119,8 +129,8 @@ export function createDesignCreateScreenTool(): LocalTool {
   return LocalToolHost.defineTool({
     name: DESIGN_CREATE_SCREEN_TOOL_NAME,
     description: [
-      'Create one or more GUI design canvas screen frames. Prefer this over design_canvas action=add_screen.',
-      'The renderer places omitted coordinates in the current whiteboard viewport and generates screen HTML afterwards.'
+      'Create one or more GUI canvas screen/frame shapes. Prefer this over design_canvas action=add_screen.',
+      'The renderer places omitted coordinates in the current whiteboard viewport and follows the current Design target when devicePreset is omitted. Design mode generates screen HTML afterwards; Code-mode whiteboard creates plain editable frame shapes with no HTML generation.'
     ].join(' '),
     toolKind: 'tool_call',
     policy: 'auto',
@@ -128,13 +138,21 @@ export function createDesignCreateScreenTool(): LocalTool {
     inputSchema: {
       type: 'object',
       properties: {
-        name: { type: 'string', description: 'Screen name for a single screen.' },
-        brief: { type: 'string', description: 'Self-contained screen brief for follow-up HTML generation.' },
+        name: { type: 'string', description: 'Screen/frame name for a single screen or whiteboard frame.' },
+        brief: {
+          type: 'string',
+          description:
+            'Self-contained screen/frame brief. Design mode uses it for follow-up HTML generation; Code-mode whiteboard keeps it as frame context only.'
+        },
         x: { type: 'number' },
         y: { type: 'number' },
-        width: { type: 'number' },
-        height: { type: 'number' },
-        devicePreset: { type: 'string', enum: ['mobile', 'tablet', 'desktop'] },
+        width: { type: 'number', description: SCREEN_DIMENSION_DESCRIPTION },
+        height: { type: 'number', description: SCREEN_DIMENSION_DESCRIPTION },
+        devicePreset: {
+          type: 'string',
+          enum: ['mobile', 'tablet', 'desktop'],
+          description: DEVICE_PRESET_DESCRIPTION
+        },
         screens: {
           type: 'array',
           maxItems: 20,
@@ -146,9 +164,13 @@ export function createDesignCreateScreenTool(): LocalTool {
               brief: { type: 'string' },
               x: { type: 'number' },
               y: { type: 'number' },
-              width: { type: 'number' },
-              height: { type: 'number' },
-              devicePreset: { type: 'string', enum: ['mobile', 'tablet', 'desktop'] }
+              width: { type: 'number', description: SCREEN_DIMENSION_DESCRIPTION },
+              height: { type: 'number', description: SCREEN_DIMENSION_DESCRIPTION },
+              devicePreset: {
+                type: 'string',
+                enum: ['mobile', 'tablet', 'desktop'],
+                description: DEVICE_PRESET_DESCRIPTION
+              }
             },
             required: ['name'],
             additionalProperties: false
@@ -261,7 +283,11 @@ export function createDesignSystemTemplateTool(): LocalTool {
         name: { type: 'string' },
         seedColor: { type: 'string', description: 'Primary brand color as #RRGGBB. Defaults to a calibrated blue.' },
         mode: { type: 'string', enum: ['light', 'dark', 'both'] },
-        template: { type: 'string', enum: ['app', 'saas', 'game', 'editor', 'mobile', 'portfolio'] },
+        template: {
+          type: 'string',
+          enum: ['app', 'saas', 'game', 'editor', 'mobile', 'portfolio'],
+          description: DESIGN_TEMPLATE_DESCRIPTION
+        },
         tone: { type: 'string', enum: ['clean', 'playful', 'premium', 'technical', 'editorial'] },
         sections: {
           type: 'array',
@@ -283,7 +309,10 @@ export function createDesignSystemTemplateTool(): LocalTool {
       const operation = oneOf(args.operation, ['create', 'update', 'apply', 'validate']) ?? 'create'
       if (operation === 'validate') {
         return designToolOutput(DESIGN_SYSTEM_TEMPLATE_TOOL_NAME, 'validate_design_system', [
-          { op: 'lint-design-system' }
+          {
+            op: 'lint-design-system',
+            ...(Array.isArray(args.targetIds) ? { targetIds: args.targetIds.filter((v): v is string => typeof v === 'string') } : {})
+          }
         ])
       }
       return designToolOutput(DESIGN_SYSTEM_TEMPLATE_TOOL_NAME, 'design_system_template', [
@@ -322,11 +351,22 @@ export function createDesignValidateTool(): LocalTool {
     shouldAdvertise: SHOULD_ADVERTISE_DESIGN_TOOL,
     inputSchema: {
       type: 'object',
-      properties: {},
+      properties: {
+        targetIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional canvas shape ids to validate, including descendants. Omit to validate the whole design board.'
+        }
+      },
       additionalProperties: false
     },
-    execute: async () =>
-      designToolOutput(DESIGN_VALIDATE_TOOL_NAME, 'validate_design_system', [{ op: 'lint-design-system' }])
+    execute: async (args) =>
+      designToolOutput(DESIGN_VALIDATE_TOOL_NAME, 'validate_design_system', [
+        {
+          op: 'lint-design-system',
+          ...(Array.isArray(args.targetIds) ? { targetIds: args.targetIds.filter((v): v is string => typeof v === 'string') } : {})
+        }
+      ])
   })
 }
 

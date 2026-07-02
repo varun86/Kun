@@ -33,7 +33,11 @@ export function parseDesignSystem(raw: string): DesignSystem | null {
   }
 }
 
-let _saveTimer: ReturnType<typeof setTimeout> | null = null
+const _saveTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+function designSystemSaveKey(workspaceRoot: string, baseDir: string | undefined): string {
+  return [workspaceRoot, baseDir ?? DESIGN_DIR].join('\0')
+}
 
 export function persistDesignSystem(
   workspaceRoot: string,
@@ -41,9 +45,11 @@ export function persistDesignSystem(
   baseDir?: string
 ): void {
   if (!workspaceRoot || typeof window.kunGui?.writeWorkspaceFile !== 'function') return
-  if (_saveTimer) clearTimeout(_saveTimer)
-  _saveTimer = setTimeout(() => {
-    _saveTimer = null
+  const key = designSystemSaveKey(workspaceRoot, baseDir)
+  const existingTimer = _saveTimers.get(key)
+  if (existingTimer) clearTimeout(existingTimer)
+  const timer = setTimeout(() => {
+    _saveTimers.delete(key)
     void window.kunGui
       .writeWorkspaceFile({
         path: designSystemPath(baseDir),
@@ -52,6 +58,7 @@ export function persistDesignSystem(
       })
       .catch(() => undefined)
   }, 600)
+  _saveTimers.set(key, timer)
 }
 
 export async function loadDesignSystem(

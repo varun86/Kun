@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createDefaultShape, createEmptyDocument, createHtmlFrameShape, type CanvasDocument } from './canvas/canvas-types'
 import {
+  designTargetContextChip,
   designHtmlElementContextTarget,
   designSelectedContextLocations,
   resolveDesignComposerContextTargets
@@ -31,6 +32,22 @@ function withShape(shape = createDefaultShape('image', 10, 20)): CanvasDocument 
 }
 
 describe('design composer context', () => {
+  it('creates a non-removable design target context chip with web default', () => {
+    expect(designTargetContextChip({ label: 'Web', detail: 'Default 1280 x 800 web frame' })).toEqual({
+      id: 'design-target:web',
+      kind: 'design-target',
+      label: 'Web',
+      detail: 'Default 1280 x 800 web frame',
+      removable: false
+    })
+    expect(designTargetContextChip({ designTarget: 'app', label: 'App' })).toEqual({
+      id: 'design-target:app',
+      kind: 'design-target',
+      label: 'App',
+      removable: false
+    })
+  })
+
   it('uses the active HTML artifact as composer context', () => {
     const html = artifact('screen-a')
     const targets = resolveDesignComposerContextTargets({

@@ -4,6 +4,8 @@ import { createDefaultShape, type CanvasShape, type ShapeType } from './canvas-t
 import { useDesignSystemStore } from './design-system-store'
 import { resolveTokenPatch, type ComponentDef, type DesignToken, type TokenProp } from './design-system-types'
 import type { OpError } from './shape-ops'
+import { normalizeDesignTarget, type DesignTarget } from '../design-context'
+import { useDesignWorkspaceStore } from '../design-workspace-store'
 
 export type DesignSystemTemplateOperation = 'create' | 'update' | 'apply'
 export type DesignSystemTemplateMode = 'light' | 'dark' | 'both'
@@ -30,6 +32,8 @@ export type DesignSystemTemplateOp = {
 type TemplateFoundation = {
   name: string
   mode: Exclude<DesignSystemTemplateMode, 'both'>
+  template: DesignSystemTemplateKind
+  designTarget: DesignTarget
   tokenPrefix?: 'light' | 'dark'
   tokens: DesignToken[]
   colors: {
@@ -56,28 +60,41 @@ type TemplateFoundation = {
 
 const DEFAULT_SEED = '#3B82D8'
 
+function defaultTemplateKind(): DesignSystemTemplateKind {
+  const target = normalizeDesignTarget(useDesignWorkspaceStore.getState().designContext.designTarget)
+  return target === 'app' ? 'mobile' : 'saas'
+}
+
+function normalizeTemplateOp(op: DesignSystemTemplateOp): DesignSystemTemplateOp & { template: DesignSystemTemplateKind } {
+  return {
+    ...op,
+    template: op.template ?? defaultTemplateKind()
+  }
+}
+
 export function applyDesignSystemTemplateOp(
   op: DesignSystemTemplateOp,
   affectedIds: Set<string>,
   errors: OpError[]
 ): void {
   if (op.dryRun) return
+  const normalizedOp = normalizeTemplateOp(op)
 
-  if (op.mode === 'both') {
-    const baseName = cleanName(op.name) || 'Design System'
-    const defaultFoundation = buildFoundation({ ...op, name: baseName, mode: 'dark' })
-    const darkFoundation = buildFoundation({ ...op, name: `${baseName} Dark`, mode: 'dark' }, 'dark')
-    const lightFoundation = buildFoundation({ ...op, name: `${baseName} Light`, mode: 'light' }, 'light')
+  if (normalizedOp.mode === 'both') {
+    const baseName = cleanName(normalizedOp.name) || 'Design System'
+    const defaultFoundation = buildFoundation({ ...normalizedOp, name: baseName, mode: 'dark' })
+    const darkFoundation = buildFoundation({ ...normalizedOp, name: `${baseName} Dark`, mode: 'dark' }, 'dark')
+    const lightFoundation = buildFoundation({ ...normalizedOp, name: `${baseName} Light`, mode: 'light' }, 'light')
     upsertTokens(defaultFoundation.tokens, op.targetIds, affectedIds)
     upsertTokens(darkFoundation.tokens, op.targetIds, affectedIds)
     upsertTokens(lightFoundation.tokens, op.targetIds, affectedIds)
     registerTemplateComponents(defaultFoundation)
-    if (op.operation !== 'apply') {
-      const width = positive(op.width) ?? 1580
-      const x = finite(op.x)
-      createTemplateBoard({ ...op, mode: 'dark', width, ...(x === undefined ? {} : { x }) }, darkFoundation, affectedIds, errors)
+    if (normalizedOp.operation !== 'apply') {
+      const width = positive(normalizedOp.width) ?? 1580
+      const x = finite(normalizedOp.x)
+      createTemplateBoard({ ...normalizedOp, mode: 'dark', width, ...(x === undefined ? {} : { x }) }, darkFoundation, affectedIds, errors)
       createTemplateBoard(
-        { ...op, mode: 'light', width, ...(x === undefined ? {} : { x: x + width + 80 }) },
+        { ...normalizedOp, mode: 'light', width, ...(x === undefined ? {} : { x: x + width + 80 }) },
         lightFoundation,
         affectedIds,
         errors
@@ -86,11 +103,11 @@ export function applyDesignSystemTemplateOp(
     return
   }
 
-  const foundation = buildFoundation(op)
+  const foundation = buildFoundation(normalizedOp)
   upsertTokens(foundation.tokens, op.targetIds, affectedIds)
   registerTemplateComponents(foundation)
-  if (op.operation !== 'apply') {
-    createTemplateBoard(op, foundation, affectedIds, errors)
+  if (normalizedOp.operation !== 'apply') {
+    createTemplateBoard(normalizedOp, foundation, affectedIds, errors)
   }
 }
 
@@ -99,8 +116,10 @@ function buildFoundation(
   tokenPrefix?: TemplateFoundation['tokenPrefix']
 ): TemplateFoundation {
   const mode = op.mode === 'light' ? 'light' : 'dark'
+  const template = op.template ?? defaultTemplateKind()
+  const designTarget = normalizeDesignTarget(useDesignWorkspaceStore.getState().designContext.designTarget)
   const primary = normalizeHex(op.seedColor) ?? DEFAULT_SEED
-  const secondary = rotateHue(primary, op.template === 'game' || op.tone === 'playful' ? 86 : 42)
+  const secondary = rotateHue(primary, template === 'game' || op.tone === 'playful' ? 86 : 42)
   const tertiary = mode === 'dark' ? '#050505' : '#111827'
   const neutral = mode === 'dark' ? '#F8FAFC' : '#FFFFFF'
   const canvas = mode === 'dark' ? '#111313' : '#F7F7F2'
@@ -109,13 +128,15 @@ function buildFoundation(
   const text = mode === 'dark' ? '#F3F0E7' : '#171717'
   const muted = mode === 'dark' ? '#AFA792' : '#68645A'
   const border = mode === 'dark' ? mix(primary, '#111313', 0.52) : mix(primary, '#FFFFFF', 0.78)
-  const fonts = fontStack(op.template, op.tone)
+  const fonts = fontStack(template, op.tone)
   const name = cleanName(op.name) || 'Design System'
   const tn = (value: string) => tokenPrefix ? `${tokenPrefix}/${value}` : value
 
   return {
     name,
     mode,
+    template,
+    designTarget,
     ...(tokenPrefix ? { tokenPrefix } : {}),
     colors: {
       primary,
@@ -393,6 +414,7 @@ function createTemplateBoard(
   const col4 = x + 1180
   const top = y + pad
   addLabel(foundation, `${foundation.name}`, col1, y + 12, board, affectedIds, 'type/label')
+  addLabel(foundation, templateBadgeLabel(foundation), col4, y + 12, board, affectedIds, 'type/label')
 
   paletteCard(foundation, 'Primary', 'brand/primary', foundation.colors.primary, col1, top, board, affectedIds)
   paletteCard(foundation, 'Secondary', 'brand/secondary', foundation.colors.secondary, col1, top + 220, board, affectedIds)
@@ -433,19 +455,46 @@ function createTemplateBoard(
   })
 
   componentCard(foundation, 'Navigation', col4, top + 290, 370, 260, board, affectedIds, (parent) => {
+    if (usesBottomNavigation(foundation.template)) {
+      addShape('rect', {
+        name: 'Bottom nav surface',
+        x: col4 + 42,
+        y: top + 112 + 290,
+        width: 285,
+        height: 78,
+        cornerRadius: 36,
+        fills: [{ type: 'solid', color: foundation.colors.elevated, opacity: 1 }],
+        tokenBindings: bindTokens(foundation, { fill: 'surface/elevated', radius: 'radius/card' })
+      }, parent, affectedIds)
+      iconButton(foundation, 'home', col4 + 100, top + 125 + 290, 'brand/primary', parent, affectedIds)
+      addIcon(foundation, 'magnifier', col4 + 198, top + 148 + 290, parent, affectedIds)
+      addIcon(foundation, 'user', col4 + 276, top + 148 + 290, parent, affectedIds)
+      return
+    }
     addShape('rect', {
-      name: 'Bottom nav surface',
-      x: col4 + 42,
-      y: top + 112 + 290,
-      width: 285,
-      height: 78,
-      cornerRadius: 36,
+      name: 'Top nav surface',
+      x: col4 + 34,
+      y: top + 108 + 290,
+      width: 300,
+      height: 62,
+      cornerRadius: 8,
       fills: [{ type: 'solid', color: foundation.colors.elevated, opacity: 1 }],
-      tokenBindings: bindTokens(foundation, { fill: 'surface/elevated', radius: 'radius/card' })
+      strokes: [{ color: foundation.colors.border, width: 2, opacity: 0.72, position: 'inside' }],
+      tokenBindings: bindTokens(foundation, { fill: 'surface/elevated', stroke: 'border/default', radius: 'radius/control' })
     }, parent, affectedIds)
-    iconButton(foundation, 'home', col4 + 100, top + 125 + 290, 'brand/primary', parent, affectedIds)
-    addIcon(foundation, 'magnifier', col4 + 198, top + 148 + 290, parent, affectedIds)
-    addIcon(foundation, 'user', col4 + 276, top + 148 + 290, parent, affectedIds)
+    addLabel(foundation, 'Product', col4 + 54, top + 124 + 290, parent, affectedIds, 'type/label', 'text/primary')
+    addLabel(foundation, 'Docs', col4 + 154, top + 124 + 290, parent, affectedIds, 'type/label')
+    addShape('rect', {
+      name: 'Sign in nav action',
+      x: col4 + 240,
+      y: top + 121 + 290,
+      width: 78,
+      height: 36,
+      cornerRadius: 8,
+      fills: [{ type: 'solid', color: foundation.colors.primary, opacity: 1 }],
+      tokenBindings: bindTokens(foundation, { fill: 'brand/primary', radius: 'radius/control' })
+    }, parent, affectedIds)
+    addLabel(foundation, 'Sign in', col4 + 250, top + 127 + 290, parent, affectedIds, 'type/label', 'brand/tertiary')
   })
 
   componentCard(foundation, 'Icon Buttons', col4, top + 580, 370, 260, board, affectedIds, (parent) => {
@@ -461,6 +510,11 @@ function createTemplateBoard(
   componentCard(foundation, 'Label Button', col3 + 198, top + 580, 172, 260, board, affectedIds, (parent) => {
     button(foundation, 'Label', col3 + 226, top + 710, 'brand/primary', 'brand/tertiary', parent, affectedIds)
   })
+}
+
+function templateBadgeLabel(foundation: TemplateFoundation): string {
+  const target = foundation.designTarget === 'app' ? 'App target' : 'Web target'
+  return `${target} - ${foundation.template} kit`
 }
 
 function paletteCard(
@@ -740,6 +794,10 @@ function fontStack(template: DesignSystemTemplateKind | undefined, tone: DesignS
     body: 'Plus Jakarta Sans, Inter, system-ui, sans-serif',
     label: 'JetBrains Mono, ui-monospace, monospace'
   }
+}
+
+function usesBottomNavigation(template: DesignSystemTemplateKind): boolean {
+  return template === 'mobile' || template === 'app' || template === 'game'
 }
 
 function iconGlyph(icon: string): string {

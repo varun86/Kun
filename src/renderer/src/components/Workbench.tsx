@@ -80,8 +80,14 @@ import {
   type DesignRuntimeQualityPayload
 } from '../design/design-html-quality'
 import { buildImplementDesignPrompt } from '../design/design-implement-prompt'
+import { looksLikeStandaloneImageAssetPrompt } from '../design/design-image-intent'
 import { createDesignArtifactId, type DesignArtifact } from '../design/design-types'
-import { formatDesignSystemMarkdown, hashDesignSystem, mergeDesignContextWithTokens } from '../design/design-context'
+import {
+  defaultFrameSizeForDesignTarget,
+  formatDesignSystemMarkdown,
+  hashDesignSystem,
+  mergeDesignContextWithTokens
+} from '../design/design-context'
 import { canImplementDesignArtifact } from '../design/design-artifact-actions'
 import { isHtmlFrame, type CanvasDocument, type CanvasShape } from '../design/canvas/canvas-types'
 import {
@@ -105,11 +111,19 @@ import {
   designComposerContextChips,
   designHtmlElementContextTarget,
   designSelectedContextLocations,
+  designTargetContextChip,
   resolveDesignComposerContextTargets
 } from '../design/design-composer-context'
-import type { DesignHtmlElementContext } from '../design/design-composer-context'
+import type { DesignComposerContext, DesignHtmlElementContext } from '../design/design-composer-context'
 import type { DesignFrameContext, ScreenTurnOptions, ScreenManifestEntry } from '../design/design-turn-prompt'
 import { takeLastCanvasOpErrors } from '../design/canvas/apply-shape-ops'
+import {
+  codeCanvasErrorKey,
+  loadCodeCanvasDesignSystemForPrompt,
+  resolveCodeCanvasWorkspaceRoot,
+  shouldSendPromptToCodeCanvas,
+  snapshotCodeCanvasForPrompt
+} from '../design/canvas/code-canvas'
 import { useDesignTokensStore } from '../design/design-tokens-store'
 import { SidebarTitlebarToggleButton } from './sidebar/SidebarPrimitives'
 import { composeWritePrompt } from '../write/quoted-selection'
@@ -717,6 +731,7 @@ export function Workbench(): ReactElement {
   const designArtifacts = useDesignWorkspaceStore((s) => s.artifacts)
   const designActiveArtifactId = useDesignWorkspaceStore((s) => s.activeArtifactId)
   const designActiveDocumentId = useDesignWorkspaceStore((s) => s.activeDocumentId)
+  const designTarget = useDesignWorkspaceStore((s) => s.designContext.designTarget ?? 'web')
   const writeAssistantModel = useWriteWorkspaceStore((s) => s.assistantModel)
   const writeAssistantProviderId = useWriteWorkspaceStore((s) => s.assistantProviderId)
   const setWriteAssistantModel = useWriteWorkspaceStore((s) => s.setAssistantModel)
@@ -834,9 +849,21 @@ export function Workbench(): ReactElement {
       route
     ]
   )
+  const designTargetChip = useMemo<DesignComposerContext>(() => {
+    const size = defaultFrameSizeForDesignTarget(designTarget)
+    const appTarget = designTarget === 'app'
+    return designTargetContextChip({
+      designTarget,
+      label: appTarget ? t('designTargetApp') : t('designTargetWeb'),
+      detail: t(appTarget ? 'designTargetContextApp' : 'designTargetContextWeb', {
+        width: size.width,
+        height: size.height
+      })
+    })
+  }, [designTarget, t])
   const designContextChips = useMemo(
-    () => designComposerContextChips(visibleDesignContextTargets),
-    [visibleDesignContextTargets]
+    () => (route === 'design' ? [designTargetChip, ...designComposerContextChips(visibleDesignContextTargets)] : []),
+    [designTargetChip, route, visibleDesignContextTargets]
   )
   const removeDesignContextChip = useCallback((id: string): void => {
     if (id.startsWith('html-element:')) {
@@ -965,6 +992,14 @@ export function Workbench(): ReactElement {
   )
   const activeSkillWorkspace = useMemo(
     () => threads.find((thread) => thread.id === activeThreadId)?.workspace || workspaceRoot || '',
+    [activeThreadId, threads, workspaceRoot]
+  )
+  const activeCodeCanvasWorkspace = useMemo(
+    () =>
+      resolveCodeCanvasWorkspaceRoot(
+        threads.find((thread) => thread.id === activeThreadId)?.workspace,
+        workspaceRoot
+      ),
     [activeThreadId, threads, workspaceRoot]
   )
   const composerChangeSummary = useMemo(
@@ -1928,6 +1963,7 @@ export function Workbench(): ReactElement {
       designState.designIntentMode === 'generate' &&
       notOnHtmlPage &&
       noCanvasSelection &&
+      !looksLikeStandaloneImageAssetPrompt(text) &&
       (designState.multiPageMode || !hasExistingPages) &&
       text.length > 0 &&
       attachmentIds.length === 0 &&
@@ -2050,13 +2086,15 @@ export function Workbench(): ReactElement {
         target = 'canvas'
         canvasSnapshot = snapshotCanvas(canvasDoc, canvasSelectionIds, {
           maxShapes: 180,
-          viewBox: useCanvasViewportStore.getState().vbox
+          viewBox: useCanvasViewportStore.getState().vbox,
+          defaultScreenSize: defaultFrameSizeForDesignTarget(latestDesignState.designContext.designTarget)
         })
       } else {
         target = 'canvas'
         canvasSnapshot = snapshotCanvas(canvasDoc, new Set(), {
           maxShapes: 180,
-          viewBox: useCanvasViewportStore.getState().vbox
+          viewBox: useCanvasViewportStore.getState().vbox,
+          defaultScreenSize: defaultFrameSizeForDesignTarget(latestDesignState.designContext.designTarget)
         })
         useDesignWorkspaceStore.getState().setDesignIntentMode('generate')
       }
@@ -2121,6 +2159,7 @@ export function Workbench(): ReactElement {
             artifact: notesArtifact,
             designMdPath: designNotesPath,
             currentTurn: promptText,
+            designContext: latestDesignState.designContext,
             selectedContext: visibleTargets.map((item) => ({
               kind: item.chip.kind,
               label: item.chip.label,
@@ -2295,7 +2334,7 @@ export function Workbench(): ReactElement {
       }
       store.setDesignIntentMode('modify')
 
-      const prompt = buildDesignHtmlQualityRepairPrompt(repairFindings, mode)
+      const prompt = buildDesignHtmlQualityRepairPrompt(repairFindings, mode, store.designContext)
       const displayText =
         mode === 'auto'
           ? `Auto-repair design quality: ${codes.join(', ')}`
@@ -3229,24 +3268,54 @@ export function Workbench(): ReactElement {
     clearComposerFileReferences()
     let outboundText = prepared.text
     let outboundDisplay = prepared.displayText
-    if (route === 'chat' && composerMode === 'agent' && rightPanelMode === 'canvas') {
-      const snapshot = snapshotCanvas(
-        useCanvasShapeStore.getState().document,
-        useCanvasSelectionStore.getState().selectedIds,
-        {
-          maxShapes: 180,
-          viewBox: useCanvasViewportStore.getState().vbox
-        }
-      )
+    let outboundGuiDesignCanvas = false
+    const codeCanvasPromptText = v || prepared.displayText || prepared.text || ''
+    const shouldSendToCodeCanvas =
+      route === 'chat' &&
+      composerMode === 'agent' &&
+      shouldSendPromptToCodeCanvas({
+        text: codeCanvasPromptText,
+        whiteboardOpen: rightPanelMode === 'canvas',
+        hasSelection: useCanvasSelectionStore.getState().selectedIds.size > 0
+      })
+    if (shouldSendToCodeCanvas) {
+      if (rightPanelMode !== 'canvas') setRightPanelMode('canvas')
+      const snapshot = activeThreadId
+        ? await snapshotCodeCanvasForPrompt({
+            workspaceRoot: activeCodeCanvasWorkspace,
+            threadId: activeThreadId,
+            currentDocument: useCanvasShapeStore.getState().document,
+            currentDocumentKey: useCanvasShapeStore.getState().documentKey,
+            selectedIds: useCanvasSelectionStore.getState().selectedIds,
+            viewBox: useCanvasViewportStore.getState().vbox,
+            defaultScreenSize: defaultFrameSizeForDesignTarget(
+              useDesignWorkspaceStore.getState().designContext.designTarget
+            )
+          })
+        : undefined
+      const canvasFeedbackKey = activeThreadId ? codeCanvasErrorKey(activeThreadId) : undefined
+      const canvasDesignSystem = activeThreadId
+        ? await loadCodeCanvasDesignSystemForPrompt({
+            workspaceRoot: activeCodeCanvasWorkspace,
+            threadId: activeThreadId
+          })
+        : undefined
       const canvasPrompt = buildCodeCanvasTurnPrompt({
-        workspaceRoot,
-        ...(snapshot.shapeCount > 0 ? { canvasSnapshot: snapshot } : {})
+        workspaceRoot: activeCodeCanvasWorkspace,
+        text: prepared.displayText ?? (v || emptyPrompt),
+        designContext: useDesignWorkspaceStore.getState().designContext,
+        ...(canvasFeedbackKey ? { previousOpErrors: takeLastCanvasOpErrors(canvasFeedbackKey) } : {}),
+        ...(canvasFeedbackKey ? { canvasFeedbackKey } : {}),
+        ...(canvasDesignSystem ? { canvasDesignSystem } : {}),
+        ...(snapshot ? { canvasSnapshot: snapshot } : {})
       })
       outboundText = `${prepared.text}\n\n${canvasPrompt}`
       outboundDisplay = prepared.displayText ?? prepared.text
+      outboundGuiDesignCanvas = true
     }
     void sendMessage(outboundText, composerMode === 'plan' ? 'plan' : 'agent', {
       ...(outboundDisplay ? { displayText: outboundDisplay } : {}),
+      ...(outboundGuiDesignCanvas ? { guiDesignCanvas: true } : {}),
       ...(reasoningEffort ? { reasoningEffort } : {}),
       ...(attachmentIds.length ? { attachmentIds } : {}),
       ...(publicAttachments.length ? { attachments: publicAttachments } : {}),
@@ -3748,8 +3817,9 @@ export function Workbench(): ReactElement {
               renderPlanPanel('h-full max-h-full w-full')
             ) : rightPanelMode === 'canvas' ? (
               <CodeCanvasPanel
-                workspaceRoot={workspaceRoot}
+                workspaceRoot={activeCodeCanvasWorkspace}
                 activeThreadId={activeThreadId}
+                onCollapse={closeRightPanel}
                 className="h-full max-h-full w-full"
               />
             ) : (
@@ -3932,6 +4002,7 @@ export function Workbench(): ReactElement {
             <DesignWorkspaceView
               leftSidebarCollapsed={leftSidebarCollapsed}
               onToggleLeftSidebar={toggleLeftSidebar}
+              busy={busy}
               onOpenAgentSettings={() => openSettings('design')}
               onImplementDesign={implementDesignInCode}
               onUseElementAsContext={useDesignHtmlElementAsContext}

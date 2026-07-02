@@ -32,6 +32,7 @@ describe('design artifact markdown', () => {
       artifact,
       designMdPath: '.kun-design/screen/DESIGN.md',
       currentTurn: 'Make this a login screen',
+      designContext: { designTarget: 'app' },
       updatedAt: '2026-06-21T00:06:00.000Z',
       selectedContext: [
         {
@@ -49,6 +50,9 @@ describe('design artifact markdown', () => {
     expect(markdown).toContain('Create a hello world page')
     expect(markdown).toContain('Make this a login screen')
     expect(markdown).toContain('[html-screen-frame] Login screen - 420 x 340')
+    expect(markdown).toContain('## Design Context')
+    expect(markdown).toContain('Target: App')
+    expect(markdown).toContain('390x844')
     expect(markdown).toContain('## Handoff Notes')
   })
 })

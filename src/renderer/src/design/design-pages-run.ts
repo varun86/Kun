@@ -2,7 +2,11 @@ import { useChatStore } from '../store/chat-store'
 import { collectAssistantTextForTurn } from '../store/chat-store-runtime-helpers'
 import type { ChatBlock, ToolBlock } from '../agent/types'
 import type { SendMessageOverrides } from '../store/chat-store-types'
-import { formatDesignSystemMarkdown, type DesignContext } from './design-context'
+import {
+  defaultPreviewNodeSizeForDesignTarget,
+  formatDesignSystemMarkdown,
+  type DesignContext
+} from './design-context'
 import { buildStitchDesignMarkdown, STITCH_DESIGN_MD_PATH } from './design-md-compat'
 import {
   DESIGN_SYSTEM_MD_PATH,
@@ -640,7 +644,10 @@ export async function runDesignPages(deps: RunDesignPagesDeps): Promise<void> {
         relativePath: `.kun-design/${docId}/${id}/v1.html`,
         designMdPath: `.kun-design/${docId}/${id}/DESIGN.md`,
         createdAt: new Date().toISOString(),
-        node: defaultDesignArtifactNode(baseIndex + i)
+        node: {
+          ...defaultDesignArtifactNode(baseIndex + i),
+          ...defaultPreviewNodeSizeForDesignTarget(deps.designContext?.designTarget)
+        }
       }
     })
     const plannedPages = pageDrafts.map((page) => ({

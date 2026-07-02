@@ -9,6 +9,7 @@ import {
   Plus,
   Sparkles,
   StopCircle,
+  Target,
   X
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -19,11 +20,13 @@ import type { QueuedUserMessage } from '../../store/chat-store-types'
 import { threadSnapshotLooksRunning } from '../../store/chat-store-runtime-helpers'
 import type { ModelProviderModelGroup } from '@shared/kun-gui-api'
 import { useDesignWorkspaceStore } from '../../design/design-workspace-store'
+import { defaultFrameSizeForDesignTarget } from '../../design/design-context'
 import { cancelDesignPagesRun } from '../../design/design-pages-run'
 import { MessageTimeline } from '../chat/MessageTimeline'
 import { FloatingComposer } from '../chat/FloatingComposer'
 import type { DesignComposerContext } from '../chat/FloatingComposer'
 import type { ComposerReasoningEffort } from '../chat/FloatingComposerModelPicker'
+import { DesignTargetToggle } from './DesignTargetToggle'
 
 type Props = {
   input: string
@@ -111,6 +114,8 @@ function DesignAIRailInner({
   const artifacts = useDesignWorkspaceStore((s) => s.artifacts)
   const activeArtifactId = useDesignWorkspaceStore((s) => s.activeArtifactId)
   const designIntentMode = useDesignWorkspaceStore((s) => s.designIntentMode)
+  const designTarget = useDesignWorkspaceStore((s) => s.designContext.designTarget ?? 'web')
+  const setDesignTarget = useDesignWorkspaceStore((s) => s.setDesignTarget)
   const multiPageMode = useDesignWorkspaceStore((s) => s.multiPageMode)
   const setMultiPageMode = useDesignWorkspaceStore((s) => s.setMultiPageMode)
   const pagesRun = useDesignWorkspaceStore((s) => s.pagesRun)
@@ -204,7 +209,19 @@ function DesignAIRailInner({
     : blocks.length > 0 || liveReasoning.trim().length > 0 || liveAssistant.trim().length > 0
   const runActive = Boolean(pagesRun)
   const activeArtifact = artifacts.find((artifact) => artifact.id === activeArtifactId) ?? null
-  const primaryContextChip = contextChips[0] ?? null
+  const designTargetContextChip = contextChips.find((chip) => chip.kind === 'design-target') ?? null
+  const targetSize = defaultFrameSizeForDesignTarget(designTarget)
+  const appTarget = designTarget === 'app'
+  const targetChipMatchesSelection = designTargetContextChip?.id === `design-target:${designTarget}`
+  const designTargetLabel = t(appTarget ? 'designTargetApp' : 'designTargetWeb')
+  const designTargetDetail =
+    (targetChipMatchesSelection ? designTargetContextChip?.detail : undefined) ??
+    t(appTarget ? 'designTargetContextApp' : 'designTargetContextWeb', {
+      width: targetSize.width,
+      height: targetSize.height
+    })
+  const designTargetStatusTitle = `${t('designTargetContextStatus')}: ${designTargetLabel} - ${designTargetDetail}`
+  const primaryContextChip = contextChips.find((chip) => chip.kind !== 'design-target') ?? null
   // Keep the composer + new-conversation locked across the whole multi-page run,
   // even during the brief idle gaps between page turns.
   const effectiveBusy = busy || runActive
@@ -392,8 +409,27 @@ function DesignAIRailInner({
         data-design-rail-composer
         className="shrink-0 border-t border-ds-border-muted bg-white/92 px-4 pb-4 pt-3 dark:bg-ds-card"
       >
-        {showContextControls ? (
+        {!viewingChildThread ? (
           <div className="mb-2 flex flex-wrap items-center gap-2">
+            <DesignTargetToggle
+              designTarget={designTarget}
+              disabled={effectiveBusy}
+              disabledReason={effectiveBusy ? t('designTargetLockedHint') : undefined}
+              onChange={setDesignTarget}
+            />
+            <div
+              className="flex max-w-full items-center gap-1.5 rounded-full border border-accent/25 bg-accent/10 px-3 py-2 text-[12.5px] font-semibold text-ds-muted"
+              title={designTargetStatusTitle}
+              aria-label={designTargetStatusTitle}
+            >
+              <Target className="h-3.5 w-3.5 shrink-0 text-accent" strokeWidth={1.8} />
+              <span className="shrink-0 text-ds-ink">{t('designTargetContextStatus')}</span>
+              <span className="text-ds-faint">·</span>
+              <span className="shrink-0 text-ds-ink">{designTargetLabel}</span>
+              <span className="hidden min-w-0 truncate text-ds-faint sm:inline">{designTargetDetail}</span>
+            </div>
+            {showContextControls ? (
+              <>
             {pagesRun ? (
               <div className="flex max-w-full items-center gap-2 rounded-full border border-accent/40 bg-accent/10 px-3 py-2 text-[12.5px] font-semibold text-accent">
                 <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" strokeWidth={2} />
@@ -456,6 +492,8 @@ function DesignAIRailInner({
                 ) : null}
               </>
             )}
+              </>
+            ) : null}
           </div>
         ) : null}
         {viewingChildThread ? (
@@ -517,6 +555,7 @@ function DesignAIRailInner({
 export const DesignAIRail = memo(DesignAIRailInner)
 
 const DESIGN_QUICK_SUGGESTIONS: { key: string; fallback: string }[] = [
+  { key: 'designQuickSuggestLogo', fallback: '给选中的图片槽生成一个品牌 Logo' },
   { key: 'designQuickSuggestMobile', fallback: '适配手机端看看效果' },
   { key: 'designQuickSuggestSection', fallback: '增加一个功能介绍板块' },
   { key: 'designQuickSuggestTheme', fallback: '换一个主题色试试' }

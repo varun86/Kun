@@ -4,9 +4,10 @@ import { useCanvasShapeStore } from './canvas-shape-store'
 import { useCanvasUndoStore } from './canvas-undo-store'
 import { useCanvasSelectionStore } from './canvas-selection-store'
 import { useDesignSystemStore } from './design-system-store'
-import { setScreenArtifactFactory } from './screen-artifact-bridge'
+import { setScreenArtifactFactory, takeScreenBrief } from './screen-artifact-bridge'
 import { useCanvasViewportStore } from './canvas-viewport-store'
 import { createEmptyDocument, type CanvasShape } from './canvas-types'
+import { useDesignWorkspaceStore } from '../design-workspace-store'
 
 beforeEach(() => {
   useCanvasShapeStore.getState().loadDocument(createEmptyDocument())
@@ -15,6 +16,7 @@ beforeEach(() => {
   useDesignSystemStore.getState().resetSystem()
   useCanvasViewportStore.getState().setVbox({ x: -600, y: -400, width: 1200, height: 800 })
   useCanvasViewportStore.getState().setContainerSize(1200, 800)
+  useDesignWorkspaceStore.setState({ designContext: { designTarget: 'web' } })
 })
 
 function getShape(id: string): CanvasShape {
@@ -170,6 +172,31 @@ describe('variant-matrix', () => {
 })
 
 describe('add-screens', () => {
+  it('keeps screen artifact creation strict unless plain-frame fallback is enabled', () => {
+    setScreenArtifactFactory(() => null)
+
+    const strict = executeOps([{ op: 'add-screen', name: 'Architecture' }])
+    expect(strict.ok).toBe(false)
+    expect(strict.errors[0]?.message).toContain('Cannot create screen artifact')
+
+    const fallback = executeOps(
+      [{ op: 'add-screen', name: 'Architecture', brief: 'Sketch the runtime layers' }],
+      'code-canvas-screen',
+      { screenFallback: 'plain-frame' }
+    )
+
+    expect(fallback.ok).toBe(true)
+    const shape = getShape(fallback.affectedIds[0])
+    expect(shape).toMatchObject({
+      type: 'frame',
+      name: 'Architecture',
+      width: 1280,
+      height: 800
+    })
+    expect(shape.htmlArtifactId).toBeUndefined()
+    expect(takeScreenBrief(shape.id)).toBeNull()
+  })
+
   it('places a single screen in the current viewport when x/y are omitted', () => {
     useCanvasViewportStore.getState().setVbox({ x: 1000, y: 500, width: 1600, height: 1000 })
     setScreenArtifactFactory((name) => `art_${name}`)
@@ -180,6 +207,47 @@ describe('add-screens', () => {
     expect(shape.y).toBe(600)
     expect(shape.width).toBe(1280)
     expect(shape.height).toBe(800)
+    setScreenArtifactFactory(null as unknown as (name: string) => string | null)
+  })
+
+  it('defaults omitted screen presets to mobile in app target mode', () => {
+    useDesignWorkspaceStore.setState({ designContext: { designTarget: 'app' } })
+    useCanvasViewportStore.getState().setVbox({ x: 1000, y: 500, width: 1600, height: 1000 })
+    setScreenArtifactFactory((name) => `art_${name}`)
+
+    const r = executeOps([
+      {
+        op: 'add-screens',
+        specs: [{ name: 'Home' }, { name: 'Settings' }]
+      }
+    ])
+
+    expect(r.ok).toBe(true)
+    const shapes = r.affectedIds.map(getShape)
+    expect(shapes.map((s) => [s.devicePreset, s.width, s.height])).toEqual([
+      ['mobile', 390, 844],
+      ['mobile', 390, 844]
+    ])
+    setScreenArtifactFactory(null as unknown as (name: string) => string | null)
+  })
+
+  it('defaults a single add-screen op to mobile dimensions in app target mode', () => {
+    useDesignWorkspaceStore.setState({ designContext: { designTarget: 'app' } })
+    useCanvasViewportStore.getState().setVbox({ x: 1000, y: 500, width: 1600, height: 1000 })
+    setScreenArtifactFactory((name) => `art_${name}`)
+
+    const r = executeOps([{ op: 'add-screen', name: 'Checkout' }])
+
+    expect(r.ok).toBe(true)
+    const shape = getShape(r.affectedIds[0])
+    expect(shape).toMatchObject({
+      type: 'frame',
+      name: 'Checkout',
+      htmlArtifactId: 'art_Checkout',
+      devicePreset: 'mobile',
+      width: 390,
+      height: 844
+    })
     setScreenArtifactFactory(null as unknown as (name: string) => string | null)
   })
 

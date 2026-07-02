@@ -3,14 +3,16 @@ import {
   DESIGN_CRAFT_LINES,
   DESIGN_DELIVERY_LINES,
   DESIGN_RESIZE_RESPONSIVE_LINES,
+  defaultFrameSizeForDesignTarget,
   formatDesignContextLines,
+  normalizeDesignTarget,
   type DesignContext
 } from './design-context'
 import type { CanvasSnapshot } from './canvas/canvas-snapshot'
 import { snapshotToCompactJson } from './canvas/canvas-snapshot'
 import type { OpError } from './canvas/shape-ops'
 import { useDesignSystemStore } from './canvas/design-system-store'
-import type { DesignToken } from './canvas/design-system-types'
+import type { DesignSystem, DesignToken } from './canvas/design-system-types'
 import { takeLastLintFindings } from './canvas/design-lint'
 import type { DerivedTokens } from './design-token-extract'
 import type { DesignContextLocation, DesignHtmlElementContext } from './design-composer-context'
@@ -93,6 +95,23 @@ export type DesignTurnOptions = {
    * canvas prompt; the apply hook stashes them and the next canvas turn takes them.
    */
   previousOpErrors?: OpError[]
+  /**
+   * Canvas mode only: one-shot feedback key for lint findings. Omitted in Design
+   * mode; Code mode uses a per-thread key so critique findings do not leak
+   * across sidebars or into the Design canvas.
+   */
+  canvasFeedbackKey?: string
+  /**
+   * Canvas prompt surface. Design mode owns HTML screen artifacts; Code mode is
+   * a sidebar whiteboard where screen ops land as plain editable frames.
+   */
+  canvasSurface?: 'design' | 'code'
+  /**
+   * Canvas mode only: explicit design-system context. Code mode passes the
+   * current thread's persisted design system here so it never falls back to
+   * another canvas' global store state.
+   */
+  canvasDesignSystem?: DesignSystem
   /**
    * Tokens extracted from the page being iterated (or the project's anchor page)
    * so an HTML/screen turn reuses the real palette/type scale instead of
@@ -179,6 +198,60 @@ export function buildPrototypeHref(fromHtmlPath: string | undefined, toHtmlPath:
   return [...up, ...down].join('/') || './'
 }
 
+const PROTOTYPE_NAVIGATION_MARKUP_LINES = [
+  'Prototype link markup contract:',
+  '- Use `<a href="...">` for navigation items that are semantically links.',
+  '- For button-like, card-like, form-submit, or tab-like controls that navigate to another screen, keep the right element and set `data-href="..."` / `data-prototype-href="..."` to the listed prototype href, or `data-prototype-target="Exact Screen Title"` when only the target page title is available; the prototype player intercepts those attributes.',
+  '- If a scripted router is necessary, call `history.pushState(...)` / `history.replaceState(...)` or `location.assign` / `location.replace` / `location.href` / `location.hash` with a prototype href or exact screen title; the prototype player intercepts those too.',
+  '- For Back / Previous controls that should return to the last prototype screen, call `history.back()` or `history.go(-1)`; the prototype player maps that to its own screen history.',
+  '- Prefer native `<a>` / `<button>` elements. If a whole card/tab must be a non-native clickable region, add `role="button"` or `role="tab"`, `tabindex="0"`, and the same `data-prototype-*` target so click and keyboard activation both work in prototype mode.',
+  '- Do not rely on text-only mentions, comments, or dead `href="#"` links for cross-screen navigation.'
+]
+
+function formatDesignTargetFrameLines(ctx: DesignContext | undefined): string[] {
+  const target = normalizeDesignTarget(ctx?.designTarget)
+  const dims = defaultFrameSizeForDesignTarget(target)
+  return target === 'app'
+    ? [
+        `Design target: App. Default screen frame is ${dims.width}x${dims.height} phone portrait unless the brief explicitly asks for tablet or desktop.`,
+        '- Bias layout toward mobile app screens: touch-sized controls, app bars, tabs/bottom navigation, focused workflows, and prototype links between screens.'
+      ]
+    : [
+        `Design target: Web. Default screen frame is ${dims.width}x${dims.height} desktop web unless the brief explicitly asks for mobile, tablet, or app.`,
+        '- Bias layout toward responsive browser/web-page behavior with real navigation, sections, and breakpoints.'
+      ]
+}
+
+function formatCanvasTargetFrameLines(
+  ctx: DesignContext | undefined,
+  surface: 'design' | 'code'
+): string[] {
+  if (surface === 'design') return formatDesignTargetFrameLines(ctx)
+  const target = normalizeDesignTarget(ctx?.designTarget)
+  const dims = defaultFrameSizeForDesignTarget(target)
+  return target === 'app'
+    ? [
+        `Design target: App. UI frame default is ${dims.width}x${dims.height} phone portrait for explicit UI mockups only.`,
+        '- Code architecture, dependency, data-flow, and debugging diagrams are freeform whiteboard shapes; do not treat them as screen/page requests.'
+      ]
+    : [
+        `Design target: Web. UI frame default is ${dims.width}x${dims.height} desktop web for explicit UI mockups only.`,
+        '- Code architecture, dependency, data-flow, and debugging diagrams are freeform whiteboard shapes; do not treat them as screen/page requests.'
+      ]
+}
+
+function formatDesignTargetAssetLines(ctx: DesignContext | undefined): string[] {
+  const target = normalizeDesignTarget(ctx?.designTarget)
+  const dims = defaultFrameSizeForDesignTarget(target)
+  return target === 'app'
+    ? [
+        `Design target: App. If this image is a UI or product mock, compose it for a ${dims.width}x${dims.height} phone-oriented app screen with touch-friendly chrome.`
+      ]
+    : [
+        `Design target: Web. If this image is a UI or product mock, compose it for a ${dims.width}x${dims.height} responsive web page or browser surface.`
+      ]
+}
+
 export type ParallelDesignPageJob = {
   artifactId: string
   title: string
@@ -201,6 +274,7 @@ export function buildParallelDesignPagesPrompt(options: ParallelDesignPagesPromp
   const lines = [
     'Kun is asking you to fan out a multi-page design build to subagents.',
     `Workspace: ${options.workspaceRoot}`,
+    ...formatDesignTargetFrameLines(options.designContext),
     '',
     'Your job in THIS parent turn:',
     '- Do NOT write or edit files directly in the parent turn.',
@@ -290,7 +364,8 @@ function formatScreenManifestLines(
       const prototypeHref = currentHtmlPath ? ` (prototype href: ${buildPrototypeHref(currentHtmlPath, s.htmlPath)})` : ''
       return `- "${s.name}"${dims}${tokens}${roleTag} → ${s.htmlPath}${prototypeHref}${summary}`
     }),
-    'Prototype navigation: turn relevant nav items, cards, tabs, and primary/secondary actions into real `<a href="...">` links using the listed prototype hrefs; keep same-page controls as buttons and avoid dead `#` links.',
+    'Prototype navigation: turn relevant nav items, cards, tabs, and primary/secondary actions into clickable routes using the listed prototype hrefs; keep same-page controls as buttons and avoid dead `#` links.',
+    ...PROTOTYPE_NAVIGATION_MARKUP_LINES,
     'Read a relevant sibling page if you need to match its exact styling. Do NOT modify sibling files — only the reserved file for this turn.'
   ]
 }
@@ -319,6 +394,7 @@ export function buildDesignTurnPrompt(options: DesignTurnOptions): string {
       ? 'Kun is asking you to ITERATE on an existing single-file HTML design.'
       : 'Kun is asking you to design a single-file interactive HTML artifact.',
     `Workspace: ${options.workspaceRoot}`,
+    ...formatDesignTargetFrameLines(options.designContext),
     ...formatFrameContextLines(options.frameContext),
     ...(options.basePath
       ? [
@@ -339,6 +415,7 @@ export function buildDesignTurnPrompt(options: DesignTurnOptions): string {
     ...DESIGN_RESIZE_RESPONSIVE_LINES,
     '- Build it INCREMENTALLY to stay inside your output limit: use focused `edit` calls or small `write` replacements and keep every tool call payload under ~4000 characters — oversized tool arguments get truncated and fail.',
     '- Write HTML ONLY through Write/Edit tool calls to the artifact file — never dump HTML into assistant text or into `design_canvas` blocks.',
+    ...formatHtmlIterationEditDisciplineLines(options),
     ...(options.designNotesPath
       ? [
           `- Keep \`${options.designNotesPath}\` aligned with the final screen: brief, visual direction, interactions, assumptions, and handoff notes.`
@@ -398,6 +475,7 @@ function buildScreenTurnPrompt(options: ScreenTurnOptions): string {
       ? `Kun is asking you to ITERATE on an existing screen design: "${options.screenName}".`
       : `Kun is asking you to design a new screen: "${options.screenName}".`,
     `Workspace: ${options.workspaceRoot}`,
+    ...formatDesignTargetFrameLines(options.designContext),
     ...(typeof options.screenWidth === 'number' && typeof options.screenHeight === 'number'
       ? [`Selected screen frame: ${Math.round(options.screenWidth)}x${Math.round(options.screenHeight)} canvas pixels.`]
       : []),
@@ -431,6 +509,7 @@ function buildScreenTurnPrompt(options: ScreenTurnOptions): string {
     ...DESIGN_RESIZE_RESPONSIVE_LINES,
     '- Build it INCREMENTALLY to stay inside your output limit: use focused `edit` calls or small `write` replacements and keep every tool call payload under ~4000 characters.',
     '- Write HTML ONLY through Write/Edit tool calls to the artifact file — never dump HTML into assistant text or into `design_canvas` blocks.',
+    ...formatHtmlIterationEditDisciplineLines(options),
     '- Wrap each major section (nav, hero, each card group, footer…) in a top-level element carrying `data-ds-section="<short label>"` — e.g. `<header data-ds-section="导航栏">` — and write sections top-to-bottom. The canvas reads these to show a live "AI is drawing here" cursor as the page builds; they are inert in the final design.',
     ...(options.designNotesPath
       ? [
@@ -485,6 +564,18 @@ function formatFrameContextLines(frame: DesignFrameContext | undefined): string[
   return [
     `Canvas frame context: ${name ? `"${name}" — ` : ''}${Math.round(frame.width)}x${Math.round(frame.height)} canvas pixels${sizeMode}.`,
     '- Use this as the actual webview viewport for layout decisions. Width should match exactly; vertical overflow should become natural page scrolling or frame auto-growth, never a scaled-down miniature.'
+  ]
+}
+
+function formatHtmlIterationEditDisciplineLines(options: DesignTurnOptions): string[] {
+  if (!options.basePath) return []
+  return [
+    '- HTML iteration discipline: read the current design first, then prefer surgical `edit` calls over full rewrites when the brief is local. Preserve unrelated DOM order, copy, classes, ids, CSS variables, media queries, scripts, form behavior, `data-*` attributes, and existing prototype links.',
+    ...(options.htmlElementContext
+      ? [
+          `- Selected-element edit: locate \`${options.htmlElementContext.selector}\` in the current HTML before editing; change that element or its nearest local component only. Do not duplicate, relocate, or restyle unrelated sections unless the user explicitly asks.`
+        ]
+      : [])
   ]
 }
 
@@ -594,10 +685,11 @@ function summarizeToken(t: DesignToken): string {
  * canvas snapshot so the agent reuses named tokens / stamps components instead of
  * hardcoding hex and re-drawing the same element. Empty when nothing is defined.
  */
-function formatDesignSystemLines(): string[] {
-  const { system } = useDesignSystemStore.getState()
-  const tokens = Object.values(system.tokens)
-  const components = Object.values(system.components)
+function formatDesignSystemLines(system?: DesignSystem | null): string[] {
+  const resolvedSystem = system === null ? null : (system ?? useDesignSystemStore.getState().system)
+  if (!resolvedSystem) return []
+  const tokens = Object.values(resolvedSystem.tokens)
+  const components = Object.values(resolvedSystem.components)
   if (tokens.length === 0 && components.length === 0) return []
   const lines: string[] = []
   if (tokens.length > 0) {
@@ -625,8 +717,8 @@ function formatDesignSystemLines(): string[] {
  * of this turn so it repairs them (bind off-token colors, fix contrast, grow tap
  * targets) — the canvas-side generate → lint → repair loop. One-shot (cleared on read).
  */
-function formatLintFindingsLines(): string[] {
-  const findings = takeLastLintFindings()
+function formatLintFindingsLines(key?: string): string[] {
+  const findings = takeLastLintFindings(key)
   if (findings.length === 0) return []
   return [
     `Design-system lint flagged ${findings.length} issue(s) from your last lint-design-system run — fix these (apply-token / set-style / resize / bulk-edit) before adding more:`,
@@ -636,10 +728,12 @@ function formatLintFindingsLines(): string[] {
 }
 
 function buildCanvasTurnPrompt(options: DesignTurnOptions): string {
+  const codeCanvasMode = options.canvasSurface === 'code'
   const snapshot = options.canvasSnapshot
   const snapshotJson = snapshot ? snapshotToCompactJson(snapshot) : '(empty canvas)'
   const errorLines = formatPreviousOpErrorLines(options.previousOpErrors)
   const editHint = deriveSelectedImageEditHint(snapshot)
+  const targetFrameSize = defaultFrameSizeForDesignTarget(options.designContext?.designTarget)
   const editHintLines = editHint
     ? [
         `IMPORTANT PRIOR — the user has EXACTLY ONE filled image selected (id "${editHint.id}", imageUrl \`${editHint.imageUrl}\`). Unless they EXPLICITLY ask for a NEW page / screen / 页面, this is the EDIT AN EXISTING IMAGE lane: call generate_image with reference_image_paths: ["${editHint.imageUrl}"], then call design_update_shapes to update that SAME shape's imageUrl. Do NOT call design_create_screen / add-screen and do NOT write or edit HTML.`,
@@ -647,19 +741,27 @@ function buildCanvasTurnPrompt(options: DesignTurnOptions): string {
       ]
     : []
   const selectionLines = formatSelectedShapesLines(snapshot)
+  const placementFrameLabel = codeCanvasMode ? 'UI frame placeholders' : 'target screen frames'
   const lines = [
-    'Kun is asking you to operate the design canvas with the dedicated design tools.',
+    codeCanvasMode
+      ? 'Kun is asking you to operate the Code sidebar whiteboard with the dedicated canvas tools.'
+      : 'Kun is asking you to operate the design canvas with the dedicated design tools.',
     `Workspace: ${options.workspaceRoot}`,
+    ...formatCanvasTargetFrameLines(options.designContext, options.canvasSurface ?? 'design'),
     '',
     ...errorLines,
-    ...formatLintFindingsLines(),
+    ...formatLintFindingsLines(options.canvasFeedbackKey),
     ...editHintLines,
     ...selectionLines,
     'How to respond:',
     '- Reply with a short plain-text plan (1-3 sentences) describing what you will do.',
-    '- Then call the real design tools one or more times. Choose the dedicated tool that matches the lane below; use legacy `design_canvas` only for backwards-compatible simple calls.',
+    codeCanvasMode
+      ? '- Then call the real canvas tools one or more times. Choose the dedicated tool that matches the lane below; use legacy `design_canvas` only for backwards-compatible simple calls.'
+      : '- Then call the real design tools one or more times. Choose the dedicated tool that matches the lane below; use legacy `design_canvas` only for backwards-compatible simple calls.',
     '- Do not emit markdown/fenced JSON blocks and do not ask the user to manually create a canvas first.',
-    '- NEVER paste raw HTML into assistant text and NEVER put HTML/`write`/`content` payloads inside design tools. Screen HTML is written by the system via Write/Edit tools after a screen frame is created.',
+    codeCanvasMode
+      ? '- NEVER paste raw HTML into assistant text and NEVER put HTML/`write`/`content` payloads inside design tools. This Code whiteboard is editable shapes; for UI sketches, compose frames/text/rects/images instead of writing files.'
+      : '- NEVER paste raw HTML into assistant text and NEVER put HTML/`write`/`content` payloads inside design tools. Screen HTML is written by the system via Write/Edit tools after a screen frame is created.',
     '- The renderer validates each tool call, applies it atomically (one undo entry per call), and visually highlights the affected shapes for ~1s.',
     '- RENDER LIVE: each tool call is executed as soon as its tool result returns — not at the end of your reply. So emit MANY focused calls progressively as you build (a frame, then its children, then the next section), instead of one giant batch. Keep them flowing so the user watches the design materialize piece by piece. Never bundle the whole design into a single call — stream it.',
     '- You can drive several parts of the layout in the same turn: fire successive design tool calls back to back (each lands immediately), so independent sections of the draft fill in one after another without waiting for a round trip.',
@@ -667,18 +769,30 @@ function buildCanvasTurnPrompt(options: DesignTurnOptions): string {
     'FIRST classify the request and commit to ONE lane (do not mix lanes):',
     '- EDIT AN EXISTING IMAGE — the user wants to change/edit/restyle/redo/recolor/fix/transform a picture that is ALREADY on the canvas, and the snapshot has a SELECTED `image` shape carrying an `imageUrl`. Phrasings like "change X into Y", "把这张图改成…", "改成 X", or "改一下这张图" all land here when the selected picture is the thing being changed. → call `generate_image` with `reference_image_paths` set to that `imageUrl`, then `design_update_shapes` that same shape (full rules under "Editing or restyling an EXISTING image" below). In this lane you MUST NOT use `design_create_screen` / `add-screen` and MUST NOT write or edit any HTML file.',
     '- FILL AN EMPTY SLOT — a selected empty holder / frame / rect (no `imageUrl`) needs a fresh picture. → `generate_image` from text only, then place it (see "Filling a selected panel" below).',
-    '- BUILD OR REDESIGN A SCREEN — the user wants a new page / screen / UI mockup ("做个页面", "设计一个…", "基于这张图做个落地页"). → call `design_create_screen`; the system generates its HTML afterwards. A selected image in this lane is only a visual reference — do NOT overwrite it.',
+    '- CREATE A STANDALONE IMAGE ASSET — the user asks for a logo, icon, illustration, poster, photo, brand mark, mascot, or reusable visual material, not a full page/screen. → call `generate_image`, then add/update an `image` shape on the canvas with the saved workspace-relative path. Keep it as a reusable whiteboard asset for later page drafts. Do NOT call `design_create_screen` and do NOT write or edit HTML.',
+    ...(codeCanvasMode
+      ? [
+          '- MAP CODE / ARCHITECTURE / FLOW — the user asks for system architecture, code structure, module relationships, data flow, API flow, state machine, database/schema map, sequence diagram, dependency graph, implementation plan, or debugging notes. → use `design_update_shapes` / `design_arrange` with normal frames, rects, text, arrows, lines, groups, and auto-layout. Do NOT use `design_create_screen` unless they explicitly ask for a UI screen mockup.'
+        ]
+      : []),
+    codeCanvasMode
+      ? '- SKETCH A SCREEN OR UI FRAME — the user wants a page/screen/UI mockup on the Code whiteboard. → call `design_create_screen` to create a plain editable frame, then add normal child shapes with `design_update_shapes`. No HTML artifact is generated in Code mode. A selected image in this lane is only a visual reference — do NOT overwrite it.'
+      : '- BUILD OR REDESIGN A SCREEN — the user wants a new page / screen / UI mockup ("做个页面", "设计一个…", "基于这张图做个落地页"). → call `design_create_screen`; the system generates its HTML afterwards. A selected image in this lane is only a visual reference — do NOT overwrite it.',
     '- CREATE OR UPDATE A DESIGN SYSTEM — the user asks for a unified template, theme, style guide, design system, tokens, palette, typography, or "make pages consistent". → call `design_system_template` first, then use `design_validate`.',
     '- EDIT THE CANVAS — add, move, restyle, group, annotate, or replace images. → use `design_update_shapes` with the structural ops below.',
     '- ARRANGE THE WHITEBOARD — align, distribute, stack, grid, or responsive reflow existing objects. → use `design_arrange` instead of hand-writing many move ops.',
-    'When a filled `image` is selected and the verb is change/edit-like, choose EDIT AN EXISTING IMAGE over BUILD OR REDESIGN A SCREEN.',
+    codeCanvasMode
+      ? 'When a filled `image` is selected and the verb is change/edit-like, choose EDIT AN EXISTING IMAGE over SKETCH A SCREEN OR UI FRAME.'
+      : 'When a filled `image` is selected and the verb is change/edit-like, choose EDIT AN EXISTING IMAGE over BUILD OR REDESIGN A SCREEN.',
     '',
     'Dedicated design tool schemas:',
-    '- `design_create_screen`: { "name": "Screen Name", "brief"?, "x"?, "y"?, "width"?, "height"?, "devicePreset"?: "mobile"|"tablet"|"desktop" } OR { "screens": [ ... ] }. Omitted x/y are placed in the current viewport; the system auto-generates HTML afterwards.',
+    codeCanvasMode
+      ? '- `design_create_screen`: { "name": "Frame Name", "brief"?, "x"?, "y"?, "width"?, "height"?, "devicePreset"?: "mobile"|"tablet"|"desktop" } OR { "screens": [ ... ] }. Omit width/height/devicePreset unless the user asks for a custom device or breakpoint; omitted x/y are placed in the current viewport, and omitted dimensions follow the current target (Web -> desktop 1280x800, App -> mobile 390x844). In Code mode this creates plain editable frame shapes only; no HTML is generated.'
+      : '- `design_create_screen`: { "name": "Screen Name", "brief"?, "x"?, "y"?, "width"?, "height"?, "devicePreset"?: "mobile"|"tablet"|"desktop" } OR { "screens": [ ... ] }. Omit width/height/devicePreset unless the user asks for a custom device or breakpoint; omitted x/y are placed in the current viewport, and omitted dimensions follow the current target (Web -> desktop 1280x800, App -> mobile 390x844). The system auto-generates HTML afterwards.',
     '- `design_update_shapes`: { "ops": [ ShapeOp, ... ] }. Edits vector layers/images on the active board.',
     '- `design_arrange`: { "operation": "align"|"distribute"|"stack"|"grid"|"responsive_reflow", ... }. Use for layout mechanics and whiteboard cleanup.',
-    '- `design_system_template`: { "operation": "create"|"update"|"apply"|"validate", "name"?, "seedColor"?, "mode"?: "light"|"dark"|"both", "template"?: "app"|"saas"|"game"|"editor"|"mobile"|"portfolio", "tone"?: "clean"|"playful"|"premium"|"technical"|"editorial", "targetIds"?, "x"?, "y"? }. Creates a reusable style-kit board and writes token bindings, like a real design-system template.',
-    '- `design_validate`: {}. Runs design-system lint so the next turn sees off-token colors, contrast issues, and tap-target problems.',
+    '- `design_system_template`: { "operation": "create"|"update"|"apply"|"validate", "name"?, "seedColor"?, "mode"?: "light"|"dark"|"both", "template"?: "app"|"saas"|"game"|"editor"|"mobile"|"portfolio", "tone"?: "clean"|"playful"|"premium"|"technical"|"editorial", "targetIds"?, "x"?, "y"? }. Creates a reusable style-kit board and writes token bindings, like a real design-system template. Omitted template follows the current target (Web -> saas/web components, App -> mobile/app components).',
+    '- `design_validate`: { "targetIds"? }. Runs design-system lint so the next turn sees off-token colors, contrast issues, and tap-target problems; pass targetIds only when the user selected a specific screen/component to validate.',
     '- Legacy `design_canvas`: { "action": "create_board"|"add_screen"|"update_shapes", ... } remains accepted, but prefer the dedicated tools above.',
     '',
     'ShapeOp vocabulary for `update_shapes.ops` (each op is a JSON object inside the array):',
@@ -696,7 +810,9 @@ function buildCanvasTurnPrompt(options: DesignTurnOptions): string {
     '- { "op": "ungroup", "id": "<group-id>" }  // dissolve a group/frame, lifting its children up one level',
     '- { "op": "set-style", "ids": ["<id>",...], "style": { "fills"?, "strokes"?, "cornerRadius"?, "opacity"?, "shadows"?, "blendMode"?, "fontColor"?, "fontSize"?, "fontFamily"?, "fontWeight"?, "textAlign"?, "lineHeight"? } }  // apply ONE style to many shapes at once — use this instead of N separate update ops',
     '- { "op": "auto-layout", "id": "<frame-or-group-id>", "layout": { "direction": "horizontal"|"vertical", "gap"?, "padding"?, "paddingTop"?, "paddingRight"?, "paddingBottom"?, "paddingLeft"?, "primaryAlign"?: "start"|"center"|"end"|"space-between", "counterAlign"?: "start"|"center"|"end" } }  // flex-style; children reflow automatically with even gap/padding. Add "clear": true to remove it.',
-    '- { "op": "add-screen", "name": "Screen Name", "x"?, "y"?, "width"?, "height"?, "devicePreset"?: "mobile"|"tablet"|"desktop" }  // legacy alias accepted inside `design_update_shapes`; prefer `design_create_screen`',
+    codeCanvasMode
+      ? '- { "op": "add-screen", "name": "Frame Name", "x"?, "y"?, "width"?, "height"?, "devicePreset"?: "mobile"|"tablet"|"desktop" }  // legacy alias accepted inside `design_update_shapes`; in Code mode this creates a normal editable frame; omitted devicePreset follows Web/App target'
+      : '- { "op": "add-screen", "name": "Screen Name", "x"?, "y"?, "width"?, "height"?, "devicePreset"?: "mobile"|"tablet"|"desktop" }  // legacy alias accepted inside `design_update_shapes`; prefer `design_create_screen`; omitted devicePreset follows Web/App target',
     '',
     'Design-system ops (use these for cohesion + batch — they make "change the brand color" or "12 identical cards" one call instead of N edits):',
     '- { "op": "define-token", "name": "brand/primary", "kind": "color"|"gradient"|"type"|"space"|"radius"|"shadow", "value": <by kind> }  // color: "#3b82d8"; gradient: a full gradient fill; type: { fontSize?, fontWeight?, fontFamily?, lineHeight?, textAlign?, fontColor? }; space/radius: a number; shadow: a shadows array. Redefining an existing token re-flows every shape bound to it.',
@@ -706,7 +822,9 @@ function buildCanvasTurnPrompt(options: DesignTurnOptions): string {
     '- { "op": "instantiate-many", "name": "ProductCard", "data": [ { "<slot>": <value> }, ... ], "layout": { "kind": "grid"|"row"|"column", "cols"?: N, "gap"?: N }, "at"?: { "x": N, "y": N }, "parentId"? }  // BATCH: one instance per data row, auto-placed on a grid. Use this for card walls / lists / repeated rows instead of N add ops.',
     '- { "op": "update-component", "name": "ProductCard", "fromId": "<edited shape-id>" }  // re-snapshot the master from an edited instance/subtree; every other instance re-flows, keeping its own overrides.',
     '- { "op": "detach", "id": "<instance root id>" }  // cut an instance loose from its component so it can diverge freely.',
-    '- { "op": "add-screens", "specs": [ { "name": "Home", "brief"?, "devicePreset"?, "x"?, "y"? }, ... ] }  // BATCH: create several screen frames in one call (auto-arranged around the user\'s current viewport, wrapping when needed); each gets its HTML generated afterwards.',
+    codeCanvasMode
+      ? '- { "op": "add-screens", "specs": [ { "name": "Home", "brief"?, "devicePreset"?, "x"?, "y"? }, ... ] }  // BATCH: create several plain editable frames in one call (auto-arranged around the user\'s current viewport, wrapping when needed); no HTML is generated in Code mode.'
+      : '- { "op": "add-screens", "specs": [ { "name": "Home", "brief"?, "devicePreset"?, "x"?, "y"? }, ... ] }  // BATCH: create several screen frames in one call (auto-arranged around the user\'s current viewport, wrapping when needed); each gets its HTML generated afterwards.',
     '- { "op": "bulk-edit", "filter": { "type"?, "nameContains"?, "boundToken"?, "component"?, "inFrame"? }, "set": { ...style fields... } }  // restyle every shape matching the filter in one call (e.g. round all buttons, recolor every ProductCard).',
     '- { "op": "grid", "id": "<frame/group id>", "cols": N, "rowGap"?, "colGap"? }  // arrange a container’s existing children on a grid (cell = largest child).',
     '- { "op": "stack", "ids": ["<id>",...], "direction": "horizontal"|"vertical", "gap"?, "name"?, "asFrame"?: true }  // wrap loose shapes into one auto-layout container (group + auto-layout in a single step).',
@@ -714,7 +832,7 @@ function buildCanvasTurnPrompt(options: DesignTurnOptions): string {
     '- { "op": "apply-theme", "ids": ["<id>",...], "remap": { "<oldToken>": "<newToken>" } }  // re-skin a subtree by rebinding its token-bound props to themed tokens (e.g. light→dark). Define both token sets first.',
     '- { "op": "recolor", "ids": ["<id>",...], "mapping": { "<oldHex>": "<newHex>" } }  // swap exact colors across a subtree (escape hatch for un-tokenized art).',
     '- { "op": "variant-matrix", "baseId": "<id>", "devices"?: ["mobile","desktop"], "themes"?: [ { "name": "dark", "remap": { "<oldToken>": "<newToken>" } } ], "gap"?, "at"? }  // BATCH: tile clones of a base across device × theme cells, each reflowed + themed. The flagship "show it everywhere" op.',
-    '- { "op": "lint-design-system" }  // self-check the design for off-token colors, low text contrast, and sub-44px tap targets. Findings surface at the top of your NEXT turn — fix them there. Run this after a big batch.',
+    '- { "op": "lint-design-system", "targetIds"? }  // self-check the design for off-token colors, low text contrast, and sub-44px tap targets. Omit targetIds for the whole board; pass selected screen/component ids for scoped validation. Findings surface at the top of your NEXT turn — fix them there. Run this after a big batch.',
     '',
     'Styling vocabulary:',
     '- Solid fill: `{ "type": "solid", "color": "#3b82d8", "opacity": 1 }`. Gradient fill: `{ "type": "linear", "angle": 90, "stops": [{ "offset": 0, "color": "#6366f1" }, { "offset": 1, "color": "#8b5cf6" }], "opacity": 1 }` (or `"type": "radial"`, no angle). `angle` is degrees clockwise: 0 = left→right, 90 = top→bottom.',
@@ -722,10 +840,19 @@ function buildCanvasTurnPrompt(options: DesignTurnOptions): string {
     '- `blendMode`: any CSS mix-blend-mode ("multiply", "screen", "overlay", …) for compositing.',
     '',
     'Rules:',
-    '- Use `design_create_screen` ONLY when the user actually wants a new page / screen (the BUILD OR REDESIGN A SCREEN lane). If a filled `image` is selected and the user asked to change / edit / restyle it, do NOT create a screen / add-screen — edit that image instead. Screen creation only creates the frame placeholder; the system will AUTOMATICALLY generate the HTML content for the screen in a follow-up step. Do NOT call write/edit tools to create HTML files in this turn.',
+    codeCanvasMode
+      ? '- Use `design_create_screen` / `add-screen` ONLY when the user actually wants a UI screen/frame sketch on the Code whiteboard. It creates an editable frame placeholder only; there is no follow-up HTML generation in Code mode. Do NOT call write/edit tools to create HTML files for this whiteboard.'
+      : '- Use `design_create_screen` ONLY when the user actually wants a new page / screen (the BUILD OR REDESIGN A SCREEN lane). If a filled `image` is selected and the user asked to change / edit / restyle it, do NOT create a screen / add-screen — edit that image instead. Screen creation only creates the frame placeholder; the system will AUTOMATICALLY generate the HTML content for the screen in a follow-up step. Do NOT call write/edit tools to create HTML files in this turn.',
+    ...(codeCanvasMode
+      ? [
+          '- For code/architecture diagrams, prefer semantic boxes and labeled arrows: services/modules as frames or rects, files/functions as smaller rects, data/events as arrows, notes as text, and related parts grouped with auto-layout. Keep labels short enough to fit.'
+        ]
+      : []),
     '- Coordinates are in CANVAS pixels (not screen pixels); 1 unit ≈ 1px at 100% zoom.',
-    '- ALL coordinates are ABSOLUTE — including shapes inside a frame or group. `parentId` sets logical grouping only; it does NOT offset coordinates. To place a child at the top-left of a frame at (200, 100), give the child x≈200, y≈100 (not 0, 0). The snapshot positions below are likewise absolute. For new screen frames, omit x/y unless the user asked for a precise placement; the app will place them in the user\'s current viewport.',
-    '- The snapshot includes `placement`: current `viewBox`, whole-board `contentBounds`, existing `occupiedFrames`, and `recommendedSlots` for new 1280x800 screens. Use it as the whiteboard map.',
+    codeCanvasMode
+      ? '- ALL coordinates are ABSOLUTE — including shapes inside a frame or group. `parentId` sets logical grouping only; it does NOT offset coordinates. To place a child at the top-left of a frame at (200, 100), give the child x≈200, y≈100 (not 0, 0). The snapshot positions below are likewise absolute. For new UI frame placeholders, omit x/y unless the user asked for a precise placement; the app will place them in the user\'s current viewport.'
+      : '- ALL coordinates are ABSOLUTE — including shapes inside a frame or group. `parentId` sets logical grouping only; it does NOT offset coordinates. To place a child at the top-left of a frame at (200, 100), give the child x≈200, y≈100 (not 0, 0). The snapshot positions below are likewise absolute. For new screen frames, omit x/y unless the user asked for a precise placement; the app will place them in the user\'s current viewport.',
+    `- The snapshot includes \`placement\`: current \`viewBox\`, whole-board \`contentBounds\`, existing \`occupiedFrames\`, and \`recommendedSlots\` for new ${targetFrameSize.width}x${targetFrameSize.height} ${placementFrameLabel}. Use it as the whiteboard map.`,
     '- For `design_create_screen`, prefer omitting `x`/`y` so the system chooses the current empty viewport slot. If you must set explicit coordinates, copy a `placement.recommendedSlots[...]` rect or align deliberately with `placement.occupiedFrames`; do not invent far-off, negative, or overlapping coordinates.',
     '- Refer to shapes by their `id` from the snapshot below. New shapes you add get auto-named uniquely per parent.',
     '- Prefer composing larger features as a frame containing children (use add for the frame, then add children with `parentId`); position each child within the frame’s absolute bounds.',
@@ -740,6 +867,7 @@ function buildCanvasTurnPrompt(options: DesignTurnOptions): string {
     '',
     'Placing a generated image on the canvas:',
     '- Call the `generate_image` tool to create the picture (pass an `aspect_ratio` matching the box you want).',
+    '- For logo/icon/brand asset requests, generate a clean reusable asset first; prefer transparent or simple neutral backgrounds when the brief allows, so it can be selected and reused in later screen/page designs.',
     '- Read the saved file path from the tool result (`output.files[0].relativePath`, e.g. `.deepseekgui-images/img-….png`).',
     '- Then call `design_update_shapes` with an `add` op with `"type": "image"` and `"imageUrl": "<that relativePath>"` plus `x`/`y`/`width`/`height` for placement. The canvas renders the workspace file automatically.',
     '- To replace an existing image, `update` that shape\'s `imageUrl` instead of adding another.',
@@ -763,7 +891,7 @@ function buildCanvasTurnPrompt(options: DesignTurnOptions): string {
     '- Before constructing `reference_image_paths`, locate each target shape in the snapshot by its `id` and copy its `imageUrl` verbatim. If the `imageUrl` field is absent on any target, drop that target from the array (do not guess or reconstruct a path from the shape name, position, or any other field).',
     '- Do NOT invent paths. If the target shape has no `imageUrl` field in the snapshot, treat it as empty and generate fresh.',
     '',
-    ...formatDesignSystemLines(),
+    ...formatDesignSystemLines(codeCanvasMode ? (options.canvasDesignSystem ?? null) : undefined),
     'Current canvas snapshot (shape ids, names, positions, `selected`/`inView`/`nearSelection`/`aiImageHolder` flags, `imageUrl` for filled image shapes, `tokenBindings` for token-bound props, sampled absolute `points` for arrows/lines/freehand with per-shape `pointsOmitted` when extra vertices were compacted, `placement` guide for viewBox/content bounds/occupied frames/recommended new-screen slots, plus a style digest — `fill`/`stroke` (color/width)/`fontColor`/`cornerRadius` — when set, so you can MATCH the existing palette instead of guessing; if `omitted` > 0 the view is truncated but selected, nearby, and viewport-visible shapes are prioritized):',
     '```json',
     snapshotJson,
@@ -796,21 +924,39 @@ function buildCanvasTurnPrompt(options: DesignTurnOptions): string {
 }
 
 /**
- * Code-mode entry point for the canvas ShapeOps turn prompt. Same instructions
- * the design canvas uses, minus the design-artifact framing — the code chat
- * agent reads it (gated on the canvas panel being open) to drive the canvas.
+ * Code-mode entry point for the canvas ShapeOps turn prompt. It uses the same
+ * tool vocabulary as Design mode, but screen ops are explicitly framed as
+ * editable whiteboard frames rather than HTML artifacts.
  */
 export function buildCodeCanvasTurnPrompt(options: {
   workspaceRoot: string
+  text?: string
   canvasSnapshot?: CanvasSnapshot
+  designContext?: DesignContext
+  previousOpErrors?: OpError[]
+  canvasFeedbackKey?: string
+  canvasDesignSystem?: DesignSystem
 }): string {
-  return buildCanvasTurnPrompt({
+  const base = buildCanvasTurnPrompt({
     target: 'canvas',
     mode: 'text',
+    ...(options.text ? { text: options.text } : {}),
     artifactRelativePath: '',
     workspaceRoot: options.workspaceRoot,
-    ...(options.canvasSnapshot ? { canvasSnapshot: options.canvasSnapshot } : {})
+    canvasSurface: 'code',
+    ...(options.designContext ? { designContext: options.designContext } : {}),
+    ...(options.canvasSnapshot ? { canvasSnapshot: options.canvasSnapshot } : {}),
+    ...(options.previousOpErrors ? { previousOpErrors: options.previousOpErrors } : {}),
+    ...(options.canvasFeedbackKey ? { canvasFeedbackKey: options.canvasFeedbackKey } : {}),
+    ...(options.canvasDesignSystem ? { canvasDesignSystem: options.canvasDesignSystem } : {})
   })
+  return [
+    base,
+    '',
+    'Code-mode whiteboard override:',
+    '- This is the Code sidebar whiteboard, not Design mode. `design_create_screen` / `add-screen` creates plain editable frame shapes here; it does NOT trigger follow-up HTML screen generation.',
+    '- For architecture maps, flows, notes, diagrams, image slots, and UI sketches, prefer `design_update_shapes` with normal frame/rect/text/arrow/image ops.'
+  ].join('\n')
 }
 
 export type DesignImageNodeOptions = {
@@ -830,6 +976,7 @@ export function buildDesignImageNodePrompt(options: DesignImageNodeOptions): str
     'Kun is asking you to generate an IMAGE for a design node.',
     `Workspace: ${options.workspaceRoot}`,
     `Reserved output file: ${options.outputRelativePath}`,
+    ...formatDesignTargetAssetLines(options.designContext),
     '',
     'How to proceed:',
     '- Use the generate_image tool to create the image from the brief below.',
@@ -864,6 +1011,7 @@ export function buildDesignFromCodePrompt(options: DesignFromCodeOptions): strin
     `Workspace: ${options.workspaceRoot}`,
     `Source UI code: ${options.sourceRelativePath}`,
     `Reserved artifact file: ${options.artifactRelativePath}`,
+    ...formatDesignTargetFrameLines(options.designContext),
     '',
     'How to proceed:',
     `- Read \`${options.sourceRelativePath}\` (and the components/styles it imports) to understand what it renders — layout, components, states, interactions.`,

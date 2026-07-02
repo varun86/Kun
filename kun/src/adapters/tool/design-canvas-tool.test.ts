@@ -4,10 +4,12 @@ import {
   createDesignCreateScreenTool,
   createDesignSystemTemplateTool,
   createDesignUpdateShapesTool,
+  createDesignValidateTool,
   DESIGN_CANVAS_TOOL_NAME,
   DESIGN_CREATE_SCREEN_TOOL_NAME,
   DESIGN_SYSTEM_TEMPLATE_TOOL_NAME,
-  DESIGN_UPDATE_SHAPES_TOOL_NAME
+  DESIGN_UPDATE_SHAPES_TOOL_NAME,
+  DESIGN_VALIDATE_TOOL_NAME
 } from './design-canvas-tool.js'
 import type { ToolHostContext } from '../../ports/tool-host.js'
 
@@ -28,6 +30,8 @@ describe('design_canvas tool', () => {
   it('is advertised only for design canvas turns', () => {
     const tool = createDesignCanvasTool()
     expect(tool.name).toBe(DESIGN_CANVAS_TOOL_NAME)
+    expect(tool.description).toContain('Code-mode sidebar whiteboard')
+    expect(JSON.stringify(tool.inputSchema)).toContain('Code whiteboard creates an editable frame')
     expect(tool.shouldAdvertise?.(context(true))).toBe(true)
     expect(tool.shouldAdvertise?.(context(false))).toBe(false)
   })
@@ -89,6 +93,12 @@ describe('dedicated design tools', () => {
     const tool = createDesignCreateScreenTool()
     expect(tool.name).toBe(DESIGN_CREATE_SCREEN_TOOL_NAME)
     expect(tool.shouldAdvertise?.(context(true))).toBe(true)
+    expect(JSON.stringify(tool.inputSchema)).toContain('Web -> desktop 1280x800')
+    expect(JSON.stringify(tool.inputSchema)).toContain('App -> mobile 390x844')
+    expect(JSON.stringify(tool.inputSchema)).toContain('Omit it unless the user asks for a custom size')
+    expect(JSON.stringify(tool.inputSchema)).toContain('omitted dimensions follow the current Design target')
+    expect(tool.description).toContain('Code-mode whiteboard creates plain editable frame shapes')
+    expect(JSON.stringify(tool.inputSchema)).toContain('Code-mode whiteboard keeps it as frame context only')
     const result = await tool.execute(
       { name: 'Home', brief: 'Dashboard home', devicePreset: 'desktop' },
       context()
@@ -116,6 +126,8 @@ describe('dedicated design tools', () => {
   it('queues a high-level design-system-template op', async () => {
     const tool = createDesignSystemTemplateTool()
     expect(tool.name).toBe(DESIGN_SYSTEM_TEMPLATE_TOOL_NAME)
+    expect(JSON.stringify(tool.inputSchema)).toContain('Web -> saas/web components')
+    expect(JSON.stringify(tool.inputSchema)).toContain('App -> mobile/app components')
     const result = await tool.execute(
       { name: 'IKUN World', seedColor: '#D4AF37', mode: 'dark', template: 'game' },
       context()
@@ -133,6 +145,31 @@ describe('dedicated design tools', () => {
           template: 'game'
         }
       ]
+    })
+  })
+
+  it('preserves target ids for design-system validation tools', async () => {
+    const templateTool = createDesignSystemTemplateTool()
+    const templateResult = await templateTool.execute(
+      { operation: 'validate', targetIds: ['screen-1', 42, 'button-1'] },
+      context()
+    )
+    expect(templateResult.output).toMatchObject({
+      ok: true,
+      tool: DESIGN_SYSTEM_TEMPLATE_TOOL_NAME,
+      ops: [{ op: 'lint-design-system', targetIds: ['screen-1', 'button-1'] }]
+    })
+
+    const validateTool = createDesignValidateTool()
+    expect(validateTool.name).toBe(DESIGN_VALIDATE_TOOL_NAME)
+    const validateResult = await validateTool.execute(
+      { targetIds: ['card-1', null, 'card-label'] },
+      context()
+    )
+    expect(validateResult.output).toMatchObject({
+      ok: true,
+      tool: DESIGN_VALIDATE_TOOL_NAME,
+      ops: [{ op: 'lint-design-system', targetIds: ['card-1', 'card-label'] }]
     })
   })
 })

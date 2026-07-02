@@ -1,14 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  buildHtmlArtifactSyncKey,
   createScreenFrameArtifact,
   findDesignBoardArtifact,
-  syncHtmlArtifactsToBoardDocument
+  syncHtmlArtifactsToBoardDocument,
+  syncHtmlFrameNodesToArtifacts
 } from './design-board'
 import { useCanvasSelectionStore } from './canvas/canvas-selection-store'
 import { useCanvasShapeStore } from './canvas/canvas-shape-store'
 import { createEmptyDocument, createHtmlFrameShape, isHtmlFrame } from './canvas/canvas-types'
 import { useCanvasUndoStore } from './canvas/canvas-undo-store'
 import { useCanvasViewportStore } from './canvas/canvas-viewport-store'
+import { defaultPreviewNodeSizeForDesignTarget } from './design-context'
+import { resolvePrototypeViewportFrame } from './prototype-player'
 import { useDesignWorkspaceStore } from './design-workspace-store'
 import { defaultDesignArtifactNode, type DesignArtifact, type DesignDocument } from './design-types'
 
@@ -49,6 +53,7 @@ function installDesignDocument(artifacts: DesignArtifact[], activeArtifactId: st
     activeDocumentId: 'doc',
     artifacts,
     activeArtifactId,
+    designContext: { designTarget: 'web' },
     fileError: null
   })
 }
@@ -64,6 +69,7 @@ beforeEach(() => {
   useCanvasSelectionStore.getState().clearSelection()
   useCanvasViewportStore.getState().setContainerSize(1200, 800)
   useCanvasViewportStore.getState().setVbox({ x: -600, y: -400, width: 1200, height: 800 })
+  useDesignWorkspaceStore.setState({ designContext: { designTarget: 'web' } })
 })
 
 afterEach(() => {
@@ -76,6 +82,35 @@ describe('design board helpers', () => {
     const newBoard = artifact('new', 'canvas', { updatedAt: '2026-06-21T00:00:00.000Z' })
 
     expect(findDesignBoardArtifact([oldBoard, artifact('screen', 'html'), newBoard])?.id).toBe('new')
+  })
+
+  it('includes design target in the HTML screen sync key', () => {
+    const screen = artifact('screen', 'html', {
+      title: 'Home',
+      node: defaultDesignArtifactNode(0)
+    })
+
+    expect(buildHtmlArtifactSyncKey([screen], 'web')).not.toBe(buildHtmlArtifactSyncKey([screen], 'app'))
+    expect(buildHtmlArtifactSyncKey([screen], undefined)).toBe(buildHtmlArtifactSyncKey([screen], 'web'))
+  })
+
+  it('includes frame size mode and view mode in the HTML screen sync key', () => {
+    const baseNode = { x: 40, y: 60, width: 1280, height: 800 }
+    const autoPreview = artifact('screen', 'html', {
+      title: 'Home',
+      node: { ...baseNode, sizeMode: 'auto', viewMode: 'preview' }
+    })
+    const manualPreview = artifact('screen', 'html', {
+      title: 'Home',
+      node: { ...baseNode, sizeMode: 'manual', viewMode: 'preview' }
+    })
+    const autoCode = artifact('screen', 'html', {
+      title: 'Home',
+      node: { ...baseNode, sizeMode: 'auto', viewMode: 'code' }
+    })
+
+    expect(buildHtmlArtifactSyncKey([autoPreview], 'web')).not.toBe(buildHtmlArtifactSyncKey([manualPreview], 'web'))
+    expect(buildHtmlArtifactSyncKey([autoPreview], 'web')).not.toBe(buildHtmlArtifactSyncKey([autoCode], 'web'))
   })
 
   it('syncs unmounted HTML artifacts into screen frames only once', () => {
@@ -117,6 +152,126 @@ describe('design board helpers', () => {
       y: 600,
       width: 1280,
       height: 800
+    })
+  })
+
+  it('syncs implicit app-target preview nodes into mobile screen frames', () => {
+    useDesignWorkspaceStore.setState({ designContext: { designTarget: 'app' } })
+    const screen = artifact('home', 'html', {
+      node: {
+        ...defaultDesignArtifactNode(0),
+        ...defaultPreviewNodeSizeForDesignTarget('app')
+      }
+    })
+
+    const synced = syncHtmlArtifactsToBoardDocument(createEmptyDocument(), [screen])
+
+    expect(synced.addedFrameIds).toHaveLength(1)
+    const frame = synced.document.objects[synced.addedFrameIds[0]]
+    expect(frame).toMatchObject({
+      htmlArtifactId: 'home',
+      width: 390,
+      height: 844,
+      devicePreset: 'mobile'
+    })
+  })
+
+  it('keeps target-default synced frames in auto size mode', () => {
+    const screen = artifact('home', 'html', {
+      node: {
+        ...defaultDesignArtifactNode(0),
+        ...defaultPreviewNodeSizeForDesignTarget('web')
+      }
+    })
+    installDesignDocument([screen], screen.id)
+    const doc = createEmptyDocument()
+    const root = doc.objects[doc.rootId]
+    const frame = createHtmlFrameShape('Home', 80, 120, 'home', 'desktop')
+    frame.width = 1280
+    frame.height = 800
+    doc.objects[frame.id] = { ...frame, parentId: doc.rootId }
+    doc.objects[doc.rootId] = { ...root, children: [frame.id] }
+
+    syncHtmlFrameNodesToArtifacts(doc)
+
+    const updated = useDesignWorkspaceStore.getState().artifacts.find((item) => item.id === 'home')
+    expect(updated?.node).toMatchObject({
+      x: 80,
+      y: 120,
+      width: 1280,
+      height: 800,
+      sizeMode: 'auto'
+    })
+  })
+
+  it('resizes existing auto frames when the design target changes', () => {
+    useDesignWorkspaceStore.setState({ designContext: { designTarget: 'app' } })
+    const screen = artifact('home', 'html', {
+      node: {
+        x: 80,
+        y: 120,
+        width: 1280,
+        height: 800,
+        sizeMode: 'auto'
+      }
+    })
+    const doc = createEmptyDocument()
+    const root = doc.objects[doc.rootId]
+    const frame = createHtmlFrameShape('Home', 80, 120, 'home', 'desktop')
+    frame.width = 1280
+    frame.height = 800
+    doc.objects[frame.id] = { ...frame, parentId: doc.rootId }
+    doc.objects[doc.rootId] = { ...root, children: [frame.id] }
+
+    const synced = syncHtmlArtifactsToBoardDocument(doc, [screen])
+
+    expect(synced.updatedFrameIds).toEqual([frame.id])
+    expect(synced.document.objects[frame.id]).toMatchObject({
+      x: 80,
+      y: 120,
+      width: 390,
+      height: 844,
+      devicePreset: 'mobile'
+    })
+  })
+
+  it('keeps artifact nodes and prototype viewport aligned after target resize sync', () => {
+    const screen = artifact('home', 'html', {
+      title: 'Home',
+      node: {
+        x: 80,
+        y: 120,
+        width: 1280,
+        height: 800,
+        sizeMode: 'auto'
+      }
+    })
+    installDesignDocument([screen], screen.id)
+    useDesignWorkspaceStore.setState({ designContext: { designTarget: 'app' } })
+
+    const doc = createEmptyDocument()
+    const root = doc.objects[doc.rootId]
+    const frame = createHtmlFrameShape('Home', 80, 120, 'home', 'desktop')
+    frame.width = 1280
+    frame.height = 800
+    doc.objects[frame.id] = { ...frame, parentId: doc.rootId }
+    doc.objects[doc.rootId] = { ...root, children: [frame.id] }
+
+    const synced = syncHtmlArtifactsToBoardDocument(doc, useDesignWorkspaceStore.getState().artifacts)
+    syncHtmlFrameNodesToArtifacts(synced.document)
+
+    const updated = useDesignWorkspaceStore.getState().artifacts.find((item) => item.id === 'home')
+    expect(updated?.node).toMatchObject({
+      x: 80,
+      y: 120,
+      width: 390,
+      height: 844,
+      sizeMode: 'auto'
+    })
+    expect(resolvePrototypeViewportFrame(updated, 'app')).toEqual({
+      width: 390,
+      height: 844,
+      orientation: 'portrait'
     })
   })
 
@@ -201,5 +356,31 @@ describe('design board helpers', () => {
     })
     expect(useCanvasSelectionStore.getState().selectedIds.has(shape.id)).toBe(true)
     expect(useCanvasViewportStore.getState().activeTool).toBe('select')
+  })
+
+  it('creates app-target screen frames with mobile dimensions by default', () => {
+    const board = artifact('board', 'canvas')
+    installDesignDocument([board], board.id)
+    useDesignWorkspaceStore.setState({ designContext: { designTarget: 'app' } })
+
+    const result = createScreenFrameArtifact({
+      boardArtifactId: board.id,
+      brief: 'Design a mobile onboarding flow'
+    })
+
+    const created = useDesignWorkspaceStore.getState().artifacts.find((item) => item.id === result.artifactId)
+    const shape = useCanvasShapeStore.getState().document.objects[result.shape.id]
+    expect(created?.node).toMatchObject({
+      width: 390,
+      height: 844,
+      sizeMode: 'manual'
+    })
+    expect(shape).toMatchObject({
+      type: 'frame',
+      htmlArtifactId: result.artifactId,
+      width: 390,
+      height: 844,
+      devicePreset: 'mobile'
+    })
   })
 })

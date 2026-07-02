@@ -32,4 +32,13 @@ describe('buildImplementDesignPrompt', () => {
     )
     expect(buildImplementDesignPrompt(base)).toContain("Detect this project's stack")
   })
+
+  it('carries the selected app target into the implementation handoff', () => {
+    const prompt = buildImplementDesignPrompt({
+      ...base,
+      designContext: { designTarget: 'app' }
+    })
+    expect(prompt).toContain('Target: App')
+    expect(prompt).toContain('390x844')
+  })
 })

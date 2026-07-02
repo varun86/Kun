@@ -67,6 +67,7 @@ describe('design workspace store', () => {
       artifacts: [canvas, screen],
       activeArtifactId: canvas.id,
       designIntentMode: 'modify',
+      designContext: { designTarget: 'web' },
       fileError: null
     })
   })
@@ -118,6 +119,58 @@ describe('design workspace store', () => {
     expect(manifest.find((entry) => entry.htmlPath === updated.relativePath)?.summary).toBe(
       'A clean login screen with email + SSO'
     )
+  })
+
+  it('uses app-target preview proportions for newly prepared HTML turns', () => {
+    useDesignWorkspaceStore.getState().setDesignTarget('app')
+    const result = useDesignWorkspaceStore.getState().prepareHtmlTurn('Create a habit tracker')
+
+    const created = useDesignWorkspaceStore.getState().artifacts.find((item) => item.id === result.artifactId)
+    expect(created?.node).toMatchObject({
+      width: 300,
+      height: 640
+    })
+  })
+
+  it('uses app-target preview proportions when upserting a new HTML artifact without a node', () => {
+    useDesignWorkspaceStore.getState().setDesignTarget('app')
+    useDesignWorkspaceStore.getState().upsertArtifact(artifact('from-code', 'html'))
+
+    const created = useDesignWorkspaceStore.getState().artifacts.find((item) => item.id === 'from-code')
+    expect(created?.node).toMatchObject({
+      width: 300,
+      height: 640
+    })
+  })
+
+  it('persists the design target from both quick toggle and context updates', () => {
+    const storage = new Map<string, string>()
+    const localStorage = {
+      getItem: vi.fn((key: string) => storage.get(key) ?? null),
+      setItem: vi.fn((key: string, value: string) => {
+        storage.set(key, value)
+      }),
+      removeItem: vi.fn((key: string) => {
+        storage.delete(key)
+      })
+    }
+    vi.stubGlobal('window', { kunGui: { writeWorkspaceFile }, localStorage })
+    vi.stubGlobal('localStorage', localStorage)
+
+    useDesignWorkspaceStore.getState().setDesignTarget('app')
+
+    expect(useDesignWorkspaceStore.getState().designContext.designTarget).toBe('app')
+    expect(storage.get('kun.design.target.v1')).toBe('app')
+
+    useDesignWorkspaceStore.getState().updateDesignContext({ designTarget: 'web' })
+
+    expect(useDesignWorkspaceStore.getState().designContext.designTarget).toBe('web')
+    expect(storage.get('kun.design.target.v1')).toBe('web')
+
+    useDesignWorkspaceStore.getState().updateDesignContext({ designTarget: 'tablet' as never })
+
+    expect(useDesignWorkspaceStore.getState().designContext.designTarget).toBe('web')
+    expect(storage.get('kun.design.target.v1')).toBe('web')
   })
 
   it('setVersionSummary no-ops on empty text or unknown ids', () => {

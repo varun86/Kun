@@ -3,12 +3,22 @@ import type { DesignSystemPreset } from '@shared/app-settings'
 /** Whether the surface is brand-led or product-led. */
 export type DesignSurfaceType = 'brand' | 'product'
 
+/** The user's intended output surface for the design agent. */
+export type DesignTarget = 'web' | 'app'
+
+export const DEFAULT_DESIGN_TARGET: DesignTarget = 'web'
+
 /**
  * Design intent injected into every design-agent turn. Generalizes the SDD
  * `SddDesignContext` (designType / brandColor / tone) by ADDING a named
  * design-system preset.
  */
 export type DesignContext = {
+  /**
+   * User-selected output target. `web` is the default; `app` means mobile-first
+   * product/app screens and should bias default artboard sizes to phone frames.
+   */
+  designTarget?: DesignTarget
   designType?: DesignSurfaceType
   /** Anchor brand color (any CSS color string). */
   brandColor?: string
@@ -38,6 +48,31 @@ export const DESIGN_TONE_OPTIONS = [
 const DESIGN_TYPE_LABEL: Record<DesignSurfaceType, string> = {
   brand: 'Brand-led (marketing / landing / portfolio — design IS the product)',
   product: 'Product-led (app UI / dashboard / tool — design SERVES the product)'
+}
+
+const DESIGN_TARGET_LABEL: Record<DesignTarget, string> = {
+  web: 'Web — default to responsive browser/web-page or web-app layouts; create desktop screen frames around 1280x800 unless the brief asks for another breakpoint.',
+  app: 'App — default to mobile-first app screens; create phone screen frames around 390x844, use app navigation patterns, and design for touch interactions.'
+}
+
+export function normalizeDesignTarget(value: unknown): DesignTarget {
+  return value === 'app' ? 'app' : DEFAULT_DESIGN_TARGET
+}
+
+export function defaultDevicePresetForDesignTarget(target: unknown): 'desktop' | 'mobile' {
+  return normalizeDesignTarget(target) === 'app' ? 'mobile' : 'desktop'
+}
+
+export function defaultFrameSizeForDesignTarget(target: unknown): { width: number; height: number } {
+  return normalizeDesignTarget(target) === 'app'
+    ? { width: 390, height: 844 }
+    : { width: 1280, height: 800 }
+}
+
+export function defaultPreviewNodeSizeForDesignTarget(target: unknown): { width: number; height: number } {
+  return normalizeDesignTarget(target) === 'app'
+    ? { width: 300, height: 640 }
+    : { width: 420, height: 340 }
 }
 
 const DESIGN_SYSTEM_LABEL: Record<Exclude<DesignSystemPreset, 'none'>, string> = {
@@ -189,22 +224,23 @@ const FONT_LABEL: Record<'system' | 'geometric' | 'humanist' | 'serif' | 'mono',
  * and keeps the same anti-"AI tell" guardrails.
  */
 export function formatDesignContextLines(ctx: DesignContext | undefined): string[] {
-  if (!ctx) return []
+  const target = normalizeDesignTarget(ctx?.designTarget)
   const parts: string[] = []
-  if (ctx.designType) parts.push(`- Surface: ${DESIGN_TYPE_LABEL[ctx.designType]}`)
-  if (ctx.brandColor) {
+  parts.push(`- Target: ${DESIGN_TARGET_LABEL[target]}`)
+  if (ctx?.designType) parts.push(`- Surface: ${DESIGN_TYPE_LABEL[ctx.designType]}`)
+  if (ctx?.brandColor) {
     parts.push(
       `- Brand color anchor: ${ctx.brandColor} — compose the palette around this; do not fall back to the purple→blue AI-default gradient.`
     )
   }
-  if (ctx.tone?.length) parts.push(`- Tone: ${ctx.tone.join('、')}`)
-  if (ctx.designSystemPreset && ctx.designSystemPreset !== 'none') {
+  if (ctx?.tone?.length) parts.push(`- Tone: ${ctx.tone.join('、')}`)
+  if (ctx?.designSystemPreset && ctx.designSystemPreset !== 'none') {
     parts.push(`- Design system: ${DESIGN_SYSTEM_LABEL[ctx.designSystemPreset]}`)
   }
-  if (ctx.designGuidelines?.trim()) parts.push(`- Additional rules: ${ctx.designGuidelines.trim()}`)
-  if (ctx.radius) parts.push(`- Corner radius: ${RADIUS_LABEL[ctx.radius]}`)
-  if (ctx.density) parts.push(`- Spacing density: ${DENSITY_LABEL[ctx.density]}`)
-  if (ctx.fontStyle) parts.push(`- Type style: ${FONT_LABEL[ctx.fontStyle]}`)
+  if (ctx?.designGuidelines?.trim()) parts.push(`- Additional rules: ${ctx.designGuidelines.trim()}`)
+  if (ctx?.radius) parts.push(`- Corner radius: ${RADIUS_LABEL[ctx.radius]}`)
+  if (ctx?.density) parts.push(`- Spacing density: ${DENSITY_LABEL[ctx.density]}`)
+  if (ctx?.fontStyle) parts.push(`- Type style: ${FONT_LABEL[ctx.fontStyle]}`)
   if (parts.length === 0) return []
   return [
     'Design context (honor it in every visual decision):',

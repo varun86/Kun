@@ -1,0 +1,56 @@
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { describe, expect, it } from 'vitest'
+import { CanvasToolbar } from './CanvasToolbar'
+
+describe('CanvasToolbar prototype playback', () => {
+  it('hides design-only controls on the code canvas', () => {
+    const html = renderToStaticMarkup(
+      createElement(CanvasToolbar, {
+        workspaceRoot: '/workspace',
+        surface: 'code'
+      })
+    )
+
+    expect(html).toContain('aria-label="Select"')
+    expect(html).toContain('aria-label="Frame"')
+    expect(html).toContain('aria-label="AI image"')
+    expect(html).toContain('aria-label="Upload image to whiteboard"')
+    expect(html).not.toContain('aria-label="AI image slot"')
+    expect(html).not.toContain('aria-label="Upload files to canvas"')
+    expect(html).not.toContain('aria-label="Screen"')
+    expect(html).not.toContain('aria-label="Design context"')
+    expect(html).not.toContain('aria-label="Critique canvas"')
+    expect(html).not.toContain('aria-label="Open design assistant"')
+    expect(html).not.toContain('aria-label="Play prototype"')
+  })
+
+  it('explains why prototype playback is disabled before a screen exists', () => {
+    const html = renderToStaticMarkup(
+      createElement(CanvasToolbar, {
+        workspaceRoot: '/workspace',
+        prototypePlayable: false,
+        onOpenPrototypePlayer: () => {}
+      })
+    )
+
+    expect(html).toContain('Create at least one screen before playing the prototype')
+    expect(html).toContain(
+      'aria-label="Create at least one screen before playing the prototype"'
+    )
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*title="Create at least one screen before playing the prototype"/)
+  })
+
+  it('keeps the normal play affordance when prototype screens exist', () => {
+    const html = renderToStaticMarkup(
+      createElement(CanvasToolbar, {
+        workspaceRoot: '/workspace',
+        prototypePlayable: true,
+        onOpenPrototypePlayer: () => {}
+      })
+    )
+
+    expect(html).toContain('aria-label="Play prototype"')
+    expect(html).not.toContain('Create at least one screen before playing the prototype')
+  })
+})

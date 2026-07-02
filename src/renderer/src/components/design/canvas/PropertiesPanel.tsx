@@ -400,10 +400,17 @@ function arrowheadOptions(flip: boolean): { value: Arrowhead; label: string; ren
 // ────────────────────────────────────────────────────────────────────────────
 
 type Props = {
+  surface?: 'design' | 'code'
   onImplementDesign?: (artifact: DesignArtifact) => void
 }
 
-function PropertiesPanelInner({ onImplementDesign }: Props): ReactElement | null {
+export function propertiesPanelShellClass(surface: 'design' | 'code'): string {
+  return surface === 'code'
+    ? 'ds-no-drag absolute bottom-[92px] right-[64px] top-[60px] z-40 flex w-[236px] max-w-[calc(100%-80px)] flex-col overflow-hidden rounded-[14px] border border-ds-border-muted bg-white/88 text-[12px] text-ds-ink shadow-[0_14px_34px_rgba(20,47,95,0.11)] backdrop-blur-2xl dark:bg-ds-canvas/90'
+    : 'ds-no-drag absolute bottom-[104px] right-[76px] top-[72px] z-40 flex w-[252px] flex-col overflow-hidden rounded-[18px] border border-ds-border-muted bg-white/82 text-[12px] text-ds-ink shadow-[0_18px_48px_rgba(20,47,95,0.12)] backdrop-blur-2xl dark:bg-ds-canvas/88 max-lg:bottom-[116px] max-lg:top-[76px]'
+}
+
+function PropertiesPanelInner({ surface = 'design', onImplementDesign }: Props): ReactElement | null {
   const { t } = useTranslation('common')
   const selectedIds = useCanvasSelectionStore((s) => s.selectedIds)
   const document = useCanvasShapeStore((s) => s.document)
@@ -450,8 +457,10 @@ function PropertiesPanelInner({ onImplementDesign }: Props): ReactElement | null
 
   if (shapes.length === 0) return null
 
+  const shellClass = propertiesPanelShellClass(surface)
+
   const renderShell = (children: ReactNode): ReactElement => (
-    <aside className="ds-no-drag absolute bottom-[104px] right-[76px] top-[72px] z-40 flex w-[252px] flex-col overflow-hidden rounded-[18px] border border-ds-border-muted bg-white/82 text-[12px] text-ds-ink shadow-[0_18px_48px_rgba(20,47,95,0.12)] backdrop-blur-2xl dark:bg-ds-canvas/88 max-lg:bottom-[116px] max-lg:top-[76px]">
+    <aside className={shellClass} data-canvas-inspector-surface={surface}>
       <div className="flex h-9 shrink-0 items-center justify-between px-4">
         <span className="select-none text-[11px] font-medium uppercase tracking-[0.1em] text-ds-faint">
           {t('canvasInspectorTitle', 'Properties')}
@@ -616,7 +625,7 @@ function PropertiesPanelInner({ onImplementDesign }: Props): ReactElement | null
         </Section>
       )}
 
-      {singleHtmlFrame && (
+      {surface === 'design' && singleHtmlFrame && (
         <Section title={t('canvasInspectorScreen', 'Screen')}>
           <div className="flex items-center gap-1 rounded-[10px] bg-ds-hover/35 p-0.5 dark:bg-white/5">
             {DEVICE_PRESETS.map(({ id, icon: Icon, w: dw, h: dh }) => {
@@ -671,7 +680,7 @@ function PropertiesPanelInner({ onImplementDesign }: Props): ReactElement | null
       )}
 
       {/* Annotate-to-edit — draw markup on a filled picture, agent applies it. */}
-      {singleFilledImage && (
+      {surface === 'design' && singleFilledImage && (
         <Section title={t('canvasInspectorAnnotate', 'AI 修改图片')}>
           <button
             type="button"

@@ -7,8 +7,9 @@ import { useCanvasSelectionStore } from './canvas-selection-store'
 
 type ShapeState = {
   document: CanvasDocument
+  documentKey: string | null
 
-  loadDocument: (doc: CanvasDocument) => void
+  loadDocument: (doc: CanvasDocument, documentKey?: string | null) => void
   resetDocument: () => void
   getShape: (id: string) => CanvasShape | undefined
   getChildren: (parentId: string) => CanvasShape[]
@@ -104,15 +105,16 @@ function deepCloneShape(
 
 export const useCanvasShapeStore = create<ShapeState>((set, get) => ({
   document: createEmptyDocument(),
+  documentKey: null,
 
-  loadDocument: (doc) => {
+  loadDocument: (doc, documentKey = null) => {
     useCanvasUndoStore.getState().clear()
-    set({ document: doc })
+    set({ document: doc, documentKey })
   },
 
   resetDocument: () => {
     useCanvasUndoStore.getState().clear()
-    set({ document: createEmptyDocument() })
+    set({ document: createEmptyDocument(), documentKey: null })
   },
 
   getShape: (id) => get().document.objects[id],

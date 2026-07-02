@@ -198,6 +198,19 @@ export type SnapshotOptions = {
   maxShapes?: number
   viewBox?: Rect
   selectedNeighborPadding?: number
+  defaultScreenSize?: { width: number; height: number }
+}
+
+function normalizeSnapshotScreenSize(size: SnapshotOptions['defaultScreenSize']): { width: number; height: number } {
+  const width =
+    typeof size?.width === 'number' && Number.isFinite(size.width) && size.width > 0
+      ? size.width
+      : SNAPSHOT_DEFAULT_SCREEN_WIDTH
+  const height =
+    typeof size?.height === 'number' && Number.isFinite(size.height) && size.height > 0
+      ? size.height
+      : SNAPSHOT_DEFAULT_SCREEN_HEIGHT
+  return { width, height }
 }
 
 export function snapshotCanvas(
@@ -212,6 +225,7 @@ export function snapshotCanvas(
   const startName = startId === rootId ? null : (objects[startId]?.name ?? null)
   const viewBox = opts?.viewBox
   const selectedNeighborPadding = opts?.selectedNeighborPadding ?? 240
+  const defaultScreenSize = normalizeSnapshotScreenSize(opts?.defaultScreenSize)
   const selectedBounds = selectedIds && selectedIds.size > 0
     ? selectionBounds(objects, selectedIds, selectedNeighborPadding)
     : null
@@ -278,21 +292,22 @@ export function snapshotCanvas(
     return {
       shapeCount: shapes.length,
       shapes: prioritized,
-      ...(viewBox ? { placement: buildPlacementGuide(doc, selectedIds, viewBox) } : {}),
+      ...(viewBox ? { placement: buildPlacementGuide(doc, selectedIds, viewBox, defaultScreenSize) } : {}),
       omitted
     }
   }
   return {
     shapeCount: shapes.length,
     shapes,
-    ...(viewBox ? { placement: buildPlacementGuide(doc, selectedIds, viewBox) } : {})
+    ...(viewBox ? { placement: buildPlacementGuide(doc, selectedIds, viewBox, defaultScreenSize) } : {})
   }
 }
 
 function buildPlacementGuide(
   doc: CanvasDocument,
   selectedIds: ReadonlySet<string> | undefined,
-  viewBox: Rect
+  viewBox: Rect,
+  defaultScreenSize: { width: number; height: number }
 ): CanvasPlacementGuide {
   const occupiedFrames = Object.values(doc.objects)
     .filter((shape): shape is CanvasShape => Boolean(shape) && shape.visible !== false && isHtmlFrame(shape))
@@ -307,7 +322,7 @@ function buildPlacementGuide(
   const recommendedSlots: CanvasPlacementSlot[] = []
   for (let index = 0; index < SNAPSHOT_RECOMMENDED_SLOT_COUNT; index += 1) {
     const rect = placeRectInViewportAvoiding(
-      { width: SNAPSHOT_DEFAULT_SCREEN_WIDTH, height: SNAPSHOT_DEFAULT_SCREEN_HEIGHT },
+      defaultScreenSize,
       viewBox,
       [...occupiedRects, ...recommendedSlots.map(expandPlacementRect)]
     )
@@ -329,7 +344,7 @@ function buildPlacementGuide(
     ...(contentBounds ? { contentBounds: compactRect(contentBounds) } : {}),
     ...(rawSelectedBounds ? { selectedBounds: compactRect(rawSelectedBounds) } : {}),
     occupiedFrames,
-    defaultScreen: { w: SNAPSHOT_DEFAULT_SCREEN_WIDTH, h: SNAPSHOT_DEFAULT_SCREEN_HEIGHT },
+    defaultScreen: { w: round(defaultScreenSize.width), h: round(defaultScreenSize.height) },
     recommendedSlots
   }
 }

@@ -24,7 +24,11 @@ import {
   readDesignThreadRegistry,
   saveDesignThreadRegistry
 } from './design-thread-registry'
-import { hashDesignSystem } from './design-context'
+import {
+  defaultPreviewNodeSizeForDesignTarget,
+  hashDesignSystem,
+  normalizeDesignTarget
+} from './design-context'
 import {
   createDesignArtifactId,
   createDesignDocumentId,
@@ -48,6 +52,7 @@ const CANVAS_INSPECTOR_PINNED_KEY = 'kun.design.canvasInspectorPinned.v1'
 const ASSISTANT_MODEL_KEY = 'kun.design.assistantModel.v1'
 const ASSISTANT_PROVIDER_KEY = 'kun.design.assistantProvider.v1'
 const MULTI_PAGE_MODE_KEY = 'kun.design.multiPageMode.v1'
+const DESIGN_TARGET_KEY = 'kun.design.target.v1'
 
 function builtinDesignWorkspaceRoot(): string {
   const homeDir = typeof window !== 'undefined' ? (window.kunGui?.homeDir ?? '') : ''
@@ -257,6 +262,10 @@ function readPersistedViewport(): DesignViewport {
   return value === 'mobile' || value === 'tablet' ? value : 'desktop'
 }
 
+function readPersistedDesignTarget(): ReturnType<typeof normalizeDesignTarget> {
+  return normalizeDesignTarget(readBrowserStorageItem(DESIGN_TARGET_KEY))
+}
+
 function readPersistedAiRailCollapsed(): boolean {
   return readBrowserStorageItem(AI_RAIL_COLLAPSED_KEY) === '1'
 }
@@ -308,7 +317,7 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
     devPreviewUrl: '',
     assistantModel: readPersistedAssistantModel(),
     assistantProviderId: readPersistedAssistantProvider(),
-    designContext: {},
+    designContext: { designTarget: readPersistedDesignTarget() },
     canvasBackground: 'light',
     liveRefresh: true,
     deviceFrame: true,
@@ -441,9 +450,16 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
               artifact.kind === 'html'
                 ? { ...artifact, designMdPath: artifact.designMdPath ?? artifactDesignMdPathOf(artifact.relativePath) }
                 : artifact
+            const defaultNode =
+              withDefaults.kind === 'html'
+                ? {
+                    ...defaultDesignArtifactNode(artifacts.length),
+                    ...defaultPreviewNodeSizeForDesignTarget(state.designContext.designTarget)
+                  }
+                : defaultDesignArtifactNode(artifacts.length)
             const nextArtifact = withDefaults.node
               ? withDefaults
-              : { ...withDefaults, node: defaultDesignArtifactNode(artifacts.length) }
+              : { ...withDefaults, node: defaultNode }
             return artifacts.some((item) => item.id === artifact.id)
               ? artifacts.map((item) => (item.id === artifact.id ? nextArtifact : item))
               : [nextArtifact, ...artifacts]
@@ -670,6 +686,12 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
 
     setDesignIntentMode: (mode) => set({ designIntentMode: mode }),
 
+    setDesignTarget: (target) => {
+      const normalized = normalizeDesignTarget(target)
+      writeBrowserStorageItem(DESIGN_TARGET_KEY, normalized)
+      set((state) => ({ designContext: { ...state.designContext, designTarget: normalized } }))
+    },
+
     setMultiPageMode: (on) => {
       writeBrowserStorageItem(MULTI_PAGE_MODE_KEY, on ? '1' : '0')
       set({ multiPageMode: on })
@@ -740,21 +762,22 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
       const relativePath = `${artifactDirPath(docId, artifactId)}/v1.html`
       const designMdPath = artifactDesignMdPath(docId, artifactId)
       const title = text.length > 48 ? `${text.slice(0, 48)}…` : text || 'Untitled design'
-    get().upsertArtifact({
-      id: artifactId,
-      kind: 'html',
-      title,
-      relativePath,
+      const nodeSize = defaultPreviewNodeSizeForDesignTarget(state.designContext.designTarget)
+      get().upsertArtifact({
+        id: artifactId,
+        kind: 'html',
+        title,
+        relativePath,
         createdAt,
         updatedAt: createdAt,
         versions: [{ id: `${artifactId}-v1`, relativePath, createdAt, summary: text }],
         designMdPath,
-      previewStatus: 'pending',
-      node: defaultDesignArtifactNode(state.artifacts.length)
-    })
-    if (options.activate === false) set({ activeArtifactId: state.activeArtifactId })
-    return { artifactId, relativePath, designMdPath }
-  },
+        previewStatus: 'pending',
+        node: { ...defaultDesignArtifactNode(state.artifacts.length), ...nodeSize }
+      })
+      if (options.activate === false) set({ activeArtifactId: state.activeArtifactId })
+      return { artifactId, relativePath, designMdPath }
+    },
 
     setAiRailCollapsed: (collapsed) => {
       writeBrowserStorageItem(AI_RAIL_COLLAPSED_KEY, collapsed ? '1' : '0')
@@ -781,8 +804,14 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
       set({ assistantModel: normalized, assistantProviderId: normalizedProvider })
     },
 
-    updateDesignContext: (patch) =>
-      set((state) => ({ designContext: { ...state.designContext, ...patch } })),
+    updateDesignContext: (patch) => {
+      const nextPatch = { ...patch }
+      if (nextPatch.designTarget) {
+        nextPatch.designTarget = normalizeDesignTarget(nextPatch.designTarget)
+        writeBrowserStorageItem(DESIGN_TARGET_KEY, nextPatch.designTarget)
+      }
+      set((state) => ({ designContext: { ...state.designContext, ...nextPatch } }))
+    },
 
     loadDesignSettings: async () => {
       set({ settingsLoaded: false })
@@ -808,6 +837,7 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
             canvasView: hasStoredView ? state.canvasView : design.defaultCanvasView,
             designContext: {
               ...state.designContext,
+              designTarget: state.designContext.designTarget ?? readPersistedDesignTarget(),
               designType: state.designContext.designType ?? (design.designType || undefined),
               designGuidelines: state.designContext.designGuidelines || design.designGuidelines || undefined,
               radius: state.designContext.radius ?? (design.radius || undefined),

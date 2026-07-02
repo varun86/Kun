@@ -4702,6 +4702,22 @@ describe('auditDesignHtmlQuality', () => {
     expect(codes).not.toContain('missing-interaction-behavior')
   })
 
+  it('accepts Back controls that use prototype-player history handlers', () => {
+    const findings = auditDesignHtmlQuality({
+      html: [
+        '<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">',
+        '<style>button:focus-visible,a:focus-visible{outline:2px solid #000}@media(max-width:640px){main{padding:16px}}</style>',
+        '</head><body><main><h1>Project details</h1><a href="#" onclick="history.back()">Back</a>',
+        '<button onclick="window.history.go(-1)">Previous step</button>',
+        '<p>Loading state, empty state, error state.</p></main></body></html>'
+      ].join('')
+    })
+    const codes = findings.map((finding) => finding.code)
+
+    expect(codes).not.toContain('dead-link-targets')
+    expect(codes).not.toContain('missing-interaction-behavior')
+  })
+
   it('flags form fields that rely only on placeholders', () => {
     const findings = auditDesignHtmlQuality({
       html: [
@@ -4753,6 +4769,30 @@ describe('auditDesignHtmlQuality', () => {
 
     expect(withAction.map((finding) => finding.code)).not.toContain('inert-form-submission')
     expect(withScript.map((finding) => finding.code)).not.toContain('inert-form-submission')
+  })
+
+  it('accepts form prototype targets intercepted by the player', () => {
+    const formTarget = auditDesignHtmlQuality({
+      html: [
+        '<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">',
+        '<style>button:focus-visible,input:focus-visible{outline:2px solid #000}@media(max-width:640px){main{padding:16px}}</style>',
+        '</head><body><main><h1>Create workspace</h1><form data-prototype-target="Dashboard"><label for="email">Email</label>',
+        '<input id="email"><button>Create workspace</button></form>',
+        '<p>Loading state, empty state, error state.</p></main></body></html>'
+      ].join('')
+    })
+    const submitterTarget = auditDesignHtmlQuality({
+      html: [
+        '<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">',
+        '<style>button:focus-visible,input:focus-visible{outline:2px solid #000}@media(max-width:640px){main{padding:16px}}</style>',
+        '</head><body><main><h1>Create workspace</h1><form><label for="team">Team</label>',
+        '<input id="team"><button type="submit" data-href="../dashboard/v1.html">Create workspace</button></form>',
+        '<p>Loading state, empty state, error state.</p></main></body></html>'
+      ].join('')
+    })
+
+    expect(formTarget.map((finding) => finding.code)).not.toContain('inert-form-submission')
+    expect(submitterTarget.map((finding) => finding.code)).not.toContain('inert-form-submission')
   })
 
   it('accepts visible and accessible form labels', () => {
@@ -5076,6 +5116,23 @@ describe('auditDesignHtmlQuality', () => {
     expect(findings.map((finding) => finding.code)).toContain('missing-prototype-navigation')
   })
 
+  it('does not treat prototype paths in text or comments as clickable navigation', () => {
+    const findings = auditDesignHtmlQuality({
+      html: [
+        '<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">',
+        '<style>a:focus-visible{outline:2px solid #000}@media(max-width:640px){main{padding:16px}}</style>',
+        '</head><body><!-- next page ../home/v1.html --><main><h1>Vendor queue</h1>',
+        '<p>Prototype should go to ../home/v1.html after approval.</p><button>Start project</button>',
+        '<p>Loading state, empty state, error state.</p></main></body></html>'
+      ].join(''),
+      siblingScreens: [
+        { name: 'Home', htmlPath: '.kun-design/doc/home/v1.html', prototypeHref: '../home/v1.html' }
+      ]
+    })
+
+    expect(findings.map((finding) => finding.code)).toContain('missing-prototype-navigation')
+  })
+
   it('flags multi-screen pages without a navigation landmark', () => {
     const findings = auditDesignHtmlQuality({
       html: [
@@ -5107,6 +5164,219 @@ describe('auditDesignHtmlQuality', () => {
 
     expect(findings.map((finding) => finding.code)).not.toContain('missing-prototype-navigation')
     expect(findings.map((finding) => finding.code)).not.toContain('missing-navigation-landmark')
+  })
+
+  it('accepts prototype navigation attributes intercepted by the player', () => {
+    const findings = auditDesignHtmlQuality({
+      html: [
+        '<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">',
+        '<style>a:focus-visible,button:focus-visible{outline:2px solid #000}@media(max-width:640px){main{padding:16px}}</style>',
+        '</head><body><header><nav><button data-prototype-target="../home/v1.html">Home</button><a data-target="../settings/v1.html">Settings</a></nav></header>',
+        '<main><h1>Vendor queue</h1><button data-href="../home/v1.html">Open overview</button>',
+        '<p>Loading state, empty state, error state.</p></main></body></html>'
+      ].join(''),
+      siblingScreens: [
+        { name: 'Home', htmlPath: '.kun-design/doc/home/v1.html', prototypeHref: '../home/v1.html' },
+        { name: 'Settings', htmlPath: '.kun-design/doc/settings/v1.html', prototypeHref: '../settings/v1.html' }
+      ]
+    })
+    const codes = findings.map((finding) => finding.code)
+
+    expect(codes).not.toContain('missing-prototype-navigation')
+    expect(codes).not.toContain('weak-prototype-navigation-coverage')
+    expect(codes).not.toContain('missing-navigation-landmark')
+  })
+
+  it('accepts explicit inline location prototype handlers intercepted by the player', () => {
+    const findings = auditDesignHtmlQuality({
+      html: [
+        '<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">',
+        '<style>a:focus-visible,button:focus-visible{outline:2px solid #000}@media(max-width:640px){main{padding:16px}}</style>',
+        '</head><body><header><nav><a href="#" onclick="location.href = \'Home\'" aria-current="page">Home</a>',
+        '<button onclick="window.location.assign(\'../settings/v1.html\')">Settings</button></nav></header>',
+        '<main><h1>Vendor queue</h1><button onclick="location.replace(\'Settings\')">Review permissions</button>',
+        '<p>Loading state, empty state, error state.</p></main></body></html>'
+      ].join(''),
+      siblingScreens: [
+        { name: 'Home', htmlPath: '.kun-design/doc/home/v1.html', prototypeHref: '../home/v1.html' },
+        { name: 'Settings', htmlPath: '.kun-design/doc/settings/v1.html', prototypeHref: '../settings/v1.html' }
+      ]
+    })
+    const codes = findings.map((finding) => finding.code)
+
+    expect(codes).not.toContain('dead-link-targets')
+    expect(codes).not.toContain('missing-prototype-navigation')
+    expect(codes).not.toContain('weak-prototype-navigation-coverage')
+    expect(codes).not.toContain('missing-navigation-landmark')
+    expect(codes).not.toContain('missing-navigation-current-state')
+  })
+
+  it('accepts scripted history prototype routes intercepted by the player', () => {
+    const findings = auditDesignHtmlQuality({
+      html: [
+        '<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">',
+        '<style>a:focus-visible,button:focus-visible{outline:2px solid #000}@media(max-width:640px){main{padding:16px}}</style>',
+        '</head><body><header><nav><button onclick="history.replaceState({}, \'\', \'../home/v1.html\')" aria-current="page">Home</button>',
+        '<button onclick="history.pushState({}, \'\', \'../settings/v1.html\')">Settings</button></nav></header>',
+        '<main><h1>Vendor queue</h1><button onclick="window.history.pushState({}, \'\', \'Settings\')">Review permissions</button>',
+        '<p>Loading state, empty state, error state.</p></main></body></html>'
+      ].join(''),
+      siblingScreens: [
+        { name: 'Home', htmlPath: '.kun-design/doc/home/v1.html', prototypeHref: '../home/v1.html' },
+        { name: 'Settings', htmlPath: '.kun-design/doc/settings/v1.html', prototypeHref: '../settings/v1.html' }
+      ]
+    })
+    const codes = findings.map((finding) => finding.code)
+
+    expect(codes).not.toContain('dead-link-targets')
+    expect(codes).not.toContain('missing-prototype-navigation')
+    expect(codes).not.toContain('weak-prototype-navigation-coverage')
+    expect(codes).not.toContain('missing-navigation-landmark')
+    expect(codes).not.toContain('missing-navigation-current-state')
+  })
+
+  it('counts form onsubmit prototype handlers as sibling navigation', () => {
+    const findings = auditDesignHtmlQuality({
+      html: [
+        '<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">',
+        '<style>a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid #000}@media(max-width:640px){main{padding:16px}}</style>',
+        '</head><body><header><nav><a href="../home/v1.html" aria-current="page">Home</a></nav></header>',
+        '<main><h1>Create workspace</h1><form onsubmit="location.href = \'Settings\'"><label for="team">Team</label>',
+        '<input id="team"><button type="submit">Create workspace</button></form>',
+        '<p>Loading state, empty state, error state.</p></main></body></html>'
+      ].join(''),
+      siblingScreens: [
+        { name: 'Home', htmlPath: '.kun-design/doc/home/v1.html', prototypeHref: '../home/v1.html' },
+        { name: 'Settings', htmlPath: '.kun-design/doc/settings/v1.html', prototypeHref: '../settings/v1.html' }
+      ]
+    })
+    const codes = findings.map((finding) => finding.code)
+
+    expect(codes).not.toContain('inert-form-submission')
+    expect(codes).not.toContain('missing-prototype-navigation')
+    expect(codes).not.toContain('weak-prototype-navigation-coverage')
+    expect(codes).not.toContain('missing-navigation-landmark')
+  })
+
+  it('counts inline location.hash prototype handlers as sibling navigation', () => {
+    const findings = auditDesignHtmlQuality({
+      html: [
+        '<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">',
+        '<style>a:focus-visible,button:focus-visible{outline:2px solid #000}@media(max-width:640px){main{padding:16px}}</style>',
+        '</head><body><header><nav><a href="../home/v1.html" aria-current="page">Home</a>',
+        '<button onclick="location.hash = \'#/settings\'">Settings</button></nav></header>',
+        '<main><h1>Vendor queue</h1><button onclick="location.hash = \'#/weekly-stats\'">Review stats</button>',
+        '<p>Loading state, empty state, error state.</p></main></body></html>'
+      ].join(''),
+      siblingScreens: [
+        { name: 'Home', htmlPath: '.kun-design/doc/home/v1.html', prototypeHref: '../home/v1.html' },
+        { name: 'Settings', htmlPath: '.kun-design/doc/settings/v1.html', prototypeHref: '../settings/v1.html' },
+        { name: 'Weekly Stats', htmlPath: '.kun-design/doc/weekly-stats/v1.html', prototypeHref: '../weekly-stats/v1.html' }
+      ]
+    })
+    const codes = findings.map((finding) => finding.code)
+
+    expect(codes).not.toContain('missing-prototype-navigation')
+    expect(codes).not.toContain('weak-prototype-navigation-coverage')
+    expect(codes).not.toContain('missing-navigation-landmark')
+    expect(codes).not.toContain('missing-navigation-current-state')
+  })
+
+  it('accepts page-title prototype targets intercepted by the player', () => {
+    const findings = auditDesignHtmlQuality({
+      html: [
+        '<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">',
+        '<style>a:focus-visible,button:focus-visible{outline:2px solid #000}@media(max-width:640px){main{padding:16px}}</style>',
+        '</head><body><header><nav><button data-prototype-target=" Home ">Home</button><button data-target="settings">Settings</button></nav></header>',
+        '<main><h1>Vendor queue</h1><button data-prototype-target="Settings">Review permissions</button>',
+        '<p>Loading state, empty state, error state.</p></main></body></html>'
+      ].join(''),
+      siblingScreens: [
+        { name: 'Home', htmlPath: '.kun-design/doc/home/v1.html', prototypeHref: '../home/v1.html' },
+        { name: 'Settings', htmlPath: '.kun-design/doc/settings/v1.html', prototypeHref: '../settings/v1.html' }
+      ]
+    })
+    const codes = findings.map((finding) => finding.code)
+
+    expect(codes).not.toContain('missing-prototype-navigation')
+    expect(codes).not.toContain('weak-prototype-navigation-coverage')
+    expect(codes).not.toContain('missing-navigation-landmark')
+  })
+
+  it('does not accept duplicate page-title prototype targets as resolved navigation', () => {
+    const findings = auditDesignHtmlQuality({
+      html: [
+        '<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">',
+        '<style>button:focus-visible{outline:2px solid #000}@media(max-width:640px){main{padding:16px}}</style>',
+        '</head><body><header><nav><button data-prototype-target="Settings">Settings</button></nav></header>',
+        '<main><h1>Vendor queue</h1><p>Loading state, empty state, error state.</p></main></body></html>'
+      ].join(''),
+      siblingScreens: [
+        { name: 'Settings', htmlPath: '.kun-design/doc/account-settings/v1.html', prototypeHref: '../account-settings/v1.html' },
+        { name: 'Settings', htmlPath: '.kun-design/doc/project-settings/v1.html', prototypeHref: '../project-settings/v1.html' }
+      ]
+    })
+
+    expect(findings.map((finding) => finding.code)).toContain('missing-prototype-navigation')
+  })
+
+  it('accepts unique route-style prototype href slugs that the player can resolve', () => {
+    const findings = auditDesignHtmlQuality({
+      html: [
+        '<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">',
+        '<style>a:focus-visible,button:focus-visible{outline:2px solid #000}@media(max-width:640px){main{padding:16px}}</style>',
+        '</head><body><header><nav><a href="/settings">Settings</a><button data-href="../weekly-stats/">Stats</button></nav></header>',
+        '<main><h1>Vendor queue</h1><button data-prototype-target="../account-settings/">Review permissions</button>',
+        '<p>Loading state, empty state, error state.</p></main></body></html>'
+      ].join(''),
+      siblingScreens: [
+        { name: 'Account Settings', htmlPath: '.kun-design/doc/account-settings/v1.html', prototypeHref: '../account-settings/v1.html' },
+        { name: 'Weekly Stats', htmlPath: '.kun-design/doc/weekly-stats/v1.html', prototypeHref: '../weekly-stats/v1.html' }
+      ]
+    })
+    const codes = findings.map((finding) => finding.code)
+
+    expect(codes).not.toContain('missing-prototype-navigation')
+    expect(codes).not.toContain('weak-prototype-navigation-coverage')
+  })
+
+  it('accepts hash-route prototype hrefs that the player can resolve', () => {
+    const findings = auditDesignHtmlQuality({
+      html: [
+        '<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">',
+        '<style>.current{font-weight:700}a:focus-visible{outline:2px solid #000}@media(max-width:640px){main{padding:16px}}</style>',
+        '</head><body><header><nav><a href="#/account-settings" aria-current="page" class="current">Settings</a><a href="#!/weekly-stats">Stats</a></nav></header>',
+        '<main><h1>Vendor queue</h1><a href="#..%2Fweekly-stats%2Fv1.html">Review stats</a>',
+        '<p>Loading state, empty state, error state.</p></main></body></html>'
+      ].join(''),
+      siblingScreens: [
+        { name: 'Account Settings', htmlPath: '.kun-design/doc/account-settings/v1.html', prototypeHref: '../account-settings/v1.html' },
+        { name: 'Weekly Stats', htmlPath: '.kun-design/doc/weekly-stats/v1.html', prototypeHref: '../weekly-stats/v1.html' }
+      ]
+    })
+    const codes = findings.map((finding) => finding.code)
+
+    expect(codes).not.toContain('dead-link-targets')
+    expect(codes).not.toContain('missing-prototype-navigation')
+    expect(codes).not.toContain('weak-prototype-navigation-coverage')
+    expect(codes).not.toContain('missing-navigation-landmark')
+  })
+
+  it('does not accept ambiguous route-style prototype href slugs as resolved navigation', () => {
+    const findings = auditDesignHtmlQuality({
+      html: [
+        '<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">',
+        '<style>a:focus-visible{outline:2px solid #000}@media(max-width:640px){main{padding:16px}}</style>',
+        '</head><body><header><nav><a href="/settings">Settings</a></nav></header>',
+        '<main><h1>Vendor queue</h1><p>Loading state, empty state, error state.</p></main></body></html>'
+      ].join(''),
+      siblingScreens: [
+        { name: 'Account Settings', htmlPath: '.kun-design/doc/account-settings/v1.html', prototypeHref: '../account-settings/v1.html' },
+        { name: 'Project Settings', htmlPath: '.kun-design/doc/project-settings/v1.html', prototypeHref: '../project-settings/v1.html' }
+      ]
+    })
+
+    expect(findings.map((finding) => finding.code)).toContain('missing-prototype-navigation')
   })
 
   it('flags multi-screen projects that link to only one sibling screen', () => {
@@ -5155,6 +5425,23 @@ describe('auditDesignHtmlQuality', () => {
         '<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">',
         '<style>a:focus-visible{outline:2px solid #000}@media(max-width:640px){main{padding:16px}}</style>',
         '</head><body><header><nav><a href="../home/v1.html">Home</a><a href="../settings/v1.html">Settings</a></nav></header>',
+        '<main><h1>Vendor queue</h1><p>Loading state, empty state, error state.</p></main></body></html>'
+      ].join(''),
+      siblingScreens: [
+        { name: 'Home', htmlPath: '.kun-design/doc/home/v1.html', prototypeHref: '../home/v1.html' },
+        { name: 'Settings', htmlPath: '.kun-design/doc/settings/v1.html', prototypeHref: '../settings/v1.html' }
+      ]
+    })
+
+    expect(findings.map((finding) => finding.code)).toContain('missing-navigation-current-state')
+  })
+
+  it('flags button-style prototype navigation without a current-page state', () => {
+    const findings = auditDesignHtmlQuality({
+      html: [
+        '<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">',
+        '<style>button:focus-visible{outline:2px solid #000}@media(max-width:640px){main{padding:16px}}</style>',
+        '</head><body><header><nav><button data-href="../home/v1.html">Home</button><button data-prototype-href="../settings/v1.html">Settings</button></nav></header>',
         '<main><h1>Vendor queue</h1><p>Loading state, empty state, error state.</p></main></body></html>'
       ].join(''),
       siblingScreens: [
@@ -5311,6 +5598,26 @@ describe('buildDesignHtmlQualityRepairPrompt', () => {
     expect(prompt).toContain('html/body/root fill the frame')
     expect(prompt).toContain('HTML 必须跟随画布 frame/webview resize 自动适应')
     expect(prompt).toContain('no horizontal scroll')
+  })
+
+  it('keeps the selected app design target in quality repair prompts', () => {
+    const prompt = buildDesignHtmlQualityRepairPrompt(
+      [
+        {
+          code: 'runtime-horizontal-overflow',
+          severity: 'critical',
+          message: 'The rendered page is wider than the viewport.',
+          suggestion: 'Remove fixed-width wrappers.'
+        }
+      ],
+      'manual',
+      { designTarget: 'app' }
+    )
+
+    expect(prompt).toContain('Design context')
+    expect(prompt).toContain('Target: App')
+    expect(prompt).toContain('390x844')
+    expect(prompt).toContain('mobile-first app screens')
   })
 
   it('includes a color-system playbook for scattered palette colors', () => {
@@ -6444,6 +6751,9 @@ describe('buildDesignHtmlQualityRepairPrompt', () => {
 
     expect(prompt).toContain('Prototype behavior')
     expect(prompt).toContain('sibling-screen navigation')
+    expect(prompt).toContain('data-prototype-href')
+    expect(prompt).toContain('data-prototype-target')
+    expect(prompt).toContain('history.back()')
     expect(prompt).toContain('current-page state')
   })
 
@@ -6462,7 +6772,8 @@ describe('buildDesignHtmlQualityRepairPrompt', () => {
 
     expect(prompt).toContain('Prototype navigation coverage')
     expect(prompt).toContain('multiple relevant pages')
-    expect(prompt).toContain('provided prototype hrefs')
+    expect(prompt).toContain('data-href')
+    expect(prompt).toContain('provided prototype hrefs or exact screen titles')
   })
 
   it('includes a palette-range playbook for one-note color systems', () => {
@@ -6726,7 +7037,21 @@ describe('runtime design quality findings', () => {
     expect(script).toContain('runtime-overlapping-text')
     expect(script).toContain('runtime-clipped-text')
     expect(script).toContain('runtime-dead-links')
+    expect(script).toContain('isPrototypeBackHandler')
+    expect(script).toContain('history\\\\.back')
+    expect(script).toContain('history\\\\.go')
     expect(script).toContain('runtime-missing-navigation-current-state')
+    expect(script).toContain('isLocalPrototypeRouteHref')
+    expect(script).toContain('hashRouteHref')
+    expect(script).toContain('startsWith(\'#\')')
+    expect(script).toContain("raw.startsWith('?')")
+    expect(script).toContain('mailto')
+    expect(script).toContain('url.host !== base.host')
+    expect(script).toContain('[data-href]')
+    expect(script).toContain('[data-prototype-href]')
+    expect(script).toContain("form.getAttribute('data-prototype-target')")
+    expect(script).toContain('button[data-prototype-target]')
+    expect(script).toContain('history\\\\.(?:pushState|replaceState)')
     expect(script).toContain('runtime-weak-primary-action')
     expect(script).toContain('runtime-generic-action-copy')
     expect(script).toContain('runtime-missing-interaction-states')

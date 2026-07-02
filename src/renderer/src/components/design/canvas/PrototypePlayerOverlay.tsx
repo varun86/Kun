@@ -1,13 +1,21 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type Ref } from 'react'
-import { AlertTriangle, ArrowLeft, ExternalLink, Play, Sparkles, X } from 'lucide-react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type Ref } from 'react'
+import { AlertTriangle, ArrowLeft, CheckCircle2, ExternalLink, Layers3, Play, Sparkles, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { startDesignHtmlPreviewWatch } from '../../../design/design-preview-file'
 import {
   buildPrototypeNavigationCaptureScript,
+  extractPrototypeHashRouteHref,
   extractPrototypeNavigationHref,
+  prototypeBackNavigationSteps,
+  prototypeMissingScreenPromptValues,
+  prototypePlayerGoBack,
+  prototypePlayerNavigateTo,
   resolveInitialPrototypeArtifactId,
   resolvePrototypeNavigationTarget,
-  resolvePrototypeLinks
+  resolvePrototypeLinks,
+  resolvePrototypeScreens,
+  resolvePrototypeViewportFrame,
+  shouldInitializePrototypePlayerCurrentId
 } from '../../../design/prototype-player'
 import type { DesignArtifact } from '../../../design/design-types'
 
@@ -25,6 +33,7 @@ type Props = {
   workspaceRoot: string
   artifacts: readonly DesignArtifact[]
   initialArtifactId?: string | null
+  designTarget?: unknown
   onClose: () => void
   onRequestMissingScreen?: (promptSeed: string) => void
 }
@@ -34,6 +43,7 @@ function PrototypePlayerOverlayInner({
   workspaceRoot,
   artifacts,
   initialArtifactId,
+  designTarget,
   onClose,
   onRequestMissingScreen
 }: Props) {
@@ -45,29 +55,61 @@ function PrototypePlayerOverlayInner({
   const [error, setError] = useState('')
   const [missingHref, setMissingHref] = useState('')
   const webviewRef = useRef<WebviewElement | null>(null)
+  const wasOpenRef = useRef(false)
 
-  const currentArtifact = useMemo(
-    () => artifacts.find((artifact) => artifact.id === currentId && artifact.kind === 'html') ?? null,
+  const initialCurrentId = useMemo(
+    () => (open ? resolveInitialPrototypeArtifactId(artifacts, initialArtifactId) : null),
+    [artifacts, initialArtifactId, open]
+  )
+  const currentIdMatchesHtmlArtifact = useMemo(
+    () => Boolean(currentId && artifacts.some((artifact) => artifact.id === currentId && artifact.kind === 'html')),
     [artifacts, currentId]
+  )
+  const activeCurrentId = open && wasOpenRef.current && currentIdMatchesHtmlArtifact ? currentId : initialCurrentId
+  const currentArtifact = useMemo(
+    () => artifacts.find((artifact) => artifact.id === activeCurrentId && artifact.kind === 'html') ?? null,
+    [activeCurrentId, artifacts]
+  )
+  const htmlArtifacts = useMemo(
+    () => resolvePrototypeScreens(artifacts),
+    [artifacts]
   )
   const links = useMemo(
     () => resolvePrototypeLinks(currentArtifact, artifacts),
     [artifacts, currentArtifact]
   )
+  const viewportFrame = useMemo(
+    () => resolvePrototypeViewportFrame(currentArtifact, designTarget),
+    [currentArtifact, designTarget]
+  )
+  const viewportFrameStyle = useMemo<CSSProperties>(
+    () => ({
+      aspectRatio: `${viewportFrame.width} / ${viewportFrame.height}`,
+      ...(viewportFrame.orientation === 'portrait' ? { height: '100%' } : { width: '100%' })
+    }),
+    [viewportFrame]
+  )
+  const viewportLabel = `${viewportFrame.width} x ${viewportFrame.height}`
 
   useEffect(() => {
-    if (!open) return
-    setCurrentId(resolveInitialPrototypeArtifactId(artifacts, initialArtifactId))
+    if (!open) {
+      wasOpenRef.current = false
+      return
+    }
+    if (!shouldInitializePrototypePlayerCurrentId({ open, wasOpen: wasOpenRef.current, currentId })) return
+    setCurrentId(initialCurrentId)
     setHistory([])
     setMissingHref('')
-  }, [artifacts, initialArtifactId, open])
+    wasOpenRef.current = true
+  }, [currentId, initialCurrentId, open])
 
   useEffect(() => {
     if (!open) return
     if (!currentId || artifacts.some((artifact) => artifact.id === currentId && artifact.kind === 'html')) return
-    setCurrentId(resolveInitialPrototypeArtifactId(artifacts, initialArtifactId))
+    setCurrentId(initialCurrentId)
     setHistory([])
-  }, [artifacts, currentId, initialArtifactId, open])
+    setMissingHref('')
+  }, [artifacts, currentId, initialCurrentId, open])
 
   useEffect(() => {
     let cancelled = false
@@ -110,21 +152,22 @@ function PrototypePlayerOverlayInner({
 
   const goTo = useCallback(
     (artifactId: string): void => {
-      if (!artifactId || artifactId === currentId) return
-      setHistory((items) => (currentId ? [...items, currentId] : items))
-      setMissingHref('')
-      setCurrentId(artifactId)
+      const state = { currentId: activeCurrentId, history, missingHref }
+      const next = prototypePlayerNavigateTo(state, artifactId)
+      if (next === state) return
+      setHistory([...next.history])
+      setMissingHref(next.missingHref)
+      setCurrentId(next.currentId)
     },
-    [currentId]
+    [activeCurrentId, history, missingHref]
   )
 
-  const goBack = useCallback((): void => {
-    setHistory((items) => {
-      const previous = items[items.length - 1]
-      if (previous) setCurrentId(previous)
-      return items.slice(0, -1)
-    })
-  }, [])
+  const goBack = useCallback((steps = 1): void => {
+    const next = prototypePlayerGoBack({ currentId: activeCurrentId, history, missingHref }, steps)
+    setHistory([...next.history])
+    setMissingHref(next.missingHref)
+    setCurrentId(next.currentId)
+  }, [activeCurrentId, history, missingHref])
 
   const webviewUrl = fileUrl ? `${fileUrl}${fileUrl.includes('?') ? '&' : '?'}rev=${revision}` : ''
 
@@ -142,8 +185,14 @@ function PrototypePlayerOverlayInner({
     const handleNavigate: EventListener = (event): void => {
       const navigationUrl = (event as WebviewNavigateEvent).url
       if (!navigationUrl) return
+      const backSteps = prototypeBackNavigationSteps(navigationUrl)
+      if (backSteps !== null) {
+        ;(event as WebviewNavigateEvent).preventDefault?.()
+        goBack(backSteps)
+        return
+      }
       const target = resolvePrototypeNavigationTarget(navigationUrl, fileUrl, links)
-      const capturedHref = extractPrototypeNavigationHref(navigationUrl)
+      const capturedHref = extractPrototypeNavigationHref(navigationUrl) ?? extractPrototypeHashRouteHref(navigationUrl)
       if (!target && !capturedHref) return
       ;(event as WebviewNavigateEvent).preventDefault?.()
       if (target) {
@@ -165,17 +214,12 @@ function PrototypePlayerOverlayInner({
       webview.removeEventListener('will-navigate', handleNavigate)
       webview.removeEventListener('did-navigate-in-page', handleNavigate)
     }
-  }, [fileUrl, goTo, links, open, webviewUrl])
+  }, [fileUrl, goBack, goTo, links, open, webviewUrl])
 
   const requestMissingScreen = useCallback((): void => {
-    const href = missingHref.trim()
-    if (!href || !currentArtifact) return
-    onRequestMissingScreen?.(
-      t('designPrototypeCreateMissingPrompt', {
-        current: currentArtifact.title,
-        href
-      })
-    )
+    const promptValues = prototypeMissingScreenPromptValues(currentArtifact, missingHref)
+    if (!promptValues) return
+    onRequestMissingScreen?.(t('designPrototypeCreateMissingPrompt', promptValues))
     onClose()
   }, [currentArtifact, missingHref, onClose, onRequestMissingScreen, t])
 
@@ -188,7 +232,7 @@ function PrototypePlayerOverlayInner({
           <header className="flex h-12 shrink-0 items-center gap-2 border-b border-ds-border bg-white/82 px-3 dark:bg-ds-card/85">
             <button
               type="button"
-              onClick={goBack}
+              onClick={() => goBack()}
               disabled={history.length === 0}
               className="flex h-8 w-8 items-center justify-center rounded-[8px] text-ds-muted transition hover:bg-ds-hover hover:text-ds-ink disabled:cursor-not-allowed disabled:opacity-35"
               title={t('designPrototypeBack', 'Back')}
@@ -204,7 +248,9 @@ function PrototypePlayerOverlayInner({
                 </span>
               </div>
               {currentArtifact ? (
-                <div className="truncate text-[10.5px] text-ds-faint">{currentArtifact.relativePath}</div>
+                <div className="truncate text-[10.5px] text-ds-faint">
+                  {currentArtifact.relativePath} - {viewportLabel}
+                </div>
               ) : null}
             </div>
             <button
@@ -218,30 +264,72 @@ function PrototypePlayerOverlayInner({
             </button>
           </header>
           <div className="min-h-0 flex-1 p-4">
-            <div className="relative h-full w-full overflow-hidden rounded-[8px] border border-ds-border bg-white shadow-[0_12px_40px_rgba(15,23,42,0.12)]">
-              {webviewUrl ? (
-                <webview
-                  key={webviewUrl}
-                  ref={webviewRef as Ref<WebviewElement>}
-                  src={webviewUrl}
-                  partition="kun-proto"
-                  webpreferences="contextIsolation=yes,nodeIntegration=no,sandbox=yes"
-                  className="h-full w-full border-0"
-                />
-              ) : (
-                <div className="flex h-full items-center justify-center text-[13px] text-ds-faint">
-                  {error || t('designCanvasLoading')}
-                </div>
-              )}
-              {error && webviewUrl ? (
-                <div className="absolute inset-x-3 top-3 rounded-[8px] border border-red-200 bg-white/92 px-3 py-2 text-[12px] text-red-600 shadow-sm backdrop-blur">
-                  {error}
-                </div>
-              ) : null}
+            <div className="flex h-full w-full items-center justify-center overflow-hidden rounded-[8px] bg-[#e9edf3] p-3 dark:bg-[#0c0f14]">
+              <div
+                className="relative max-h-full max-w-full overflow-hidden rounded-[8px] border border-ds-border bg-white shadow-[0_12px_40px_rgba(15,23,42,0.12)]"
+                style={viewportFrameStyle}
+              >
+                {webviewUrl ? (
+                  <webview
+                    key={webviewUrl}
+                    ref={webviewRef as Ref<WebviewElement>}
+                    src={webviewUrl}
+                    partition="kun-proto"
+                    webpreferences="contextIsolation=yes,nodeIntegration=no,sandbox=yes"
+                    className="h-full w-full border-0"
+                  />
+                ) : (
+                  <div className="flex h-full items-center justify-center text-[13px] text-ds-faint">
+                    {error || t('designCanvasLoading')}
+                  </div>
+                )}
+                {error && webviewUrl ? (
+                  <div className="absolute inset-x-3 top-3 rounded-[8px] border border-red-200 bg-white/92 px-3 py-2 text-[12px] text-red-600 shadow-sm backdrop-blur">
+                    {error}
+                  </div>
+                ) : null}
+              </div>
             </div>
           </div>
         </main>
         <aside className="flex w-[270px] shrink-0 flex-col border-l border-ds-border bg-white/90 p-3 dark:bg-ds-card/88">
+          <div className="mb-2 flex items-center gap-1.5 px-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-ds-faint">
+            <Layers3 className="h-3.5 w-3.5" strokeWidth={1.8} />
+            <span>{t('designPrototypeAllScreens', 'All screens')}</span>
+            <span className="ml-auto rounded-full bg-ds-hover px-1.5 py-0.5 text-[10px] tracking-normal text-ds-muted">
+              {htmlArtifacts.length}
+            </span>
+          </div>
+          <div className="mb-3 flex max-h-48 min-h-0 flex-col gap-1 overflow-y-auto border-b border-ds-border pb-3">
+            {htmlArtifacts.map((artifact) => {
+              const active = artifact.id === activeCurrentId
+              return (
+                <button
+                  key={artifact.id}
+                  type="button"
+                  onClick={() => goTo(artifact.id)}
+                  aria-current={active ? 'page' : undefined}
+                  className={[
+                    'group flex min-h-10 w-full items-center gap-2 rounded-[8px] px-2.5 py-2 text-left text-[12px] transition',
+                    active
+                      ? 'bg-accent/12 text-ds-ink ring-1 ring-accent/25'
+                      : 'text-ds-muted hover:bg-ds-hover hover:text-ds-ink'
+                  ].join(' ')}
+                  title={artifact.relativePath}
+                >
+                  {active ? (
+                    <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-accent" strokeWidth={1.9} />
+                  ) : (
+                    <Play className="h-3.5 w-3.5 shrink-0 text-ds-faint group-hover:text-accent" strokeWidth={1.8} />
+                  )}
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-medium">{artifact.title}</span>
+                    <span className="block truncate text-[10.5px] text-ds-faint">{artifact.relativePath}</span>
+                  </span>
+                </button>
+              )
+            })}
+          </div>
           <div className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-ds-faint">
             {t('designPrototypeNextScreens', 'Next screens')}
           </div>

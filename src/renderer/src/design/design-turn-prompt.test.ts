@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildCodeCanvasTurnPrompt,
+  buildDesignFromCodePrompt,
+  buildDesignImageNodePrompt,
   buildDesignTurnPrompt,
   buildParallelDesignPagesPrompt,
   buildPrototypeHref
@@ -9,6 +11,7 @@ import type { ScreenTurnOptions } from './design-turn-prompt'
 import { snapshotCanvas } from './canvas/canvas-snapshot'
 import { createDefaultShape, createEmptyDocument, createHtmlFrameShape } from './canvas/canvas-types'
 import { setLastLintFindings } from './canvas/design-lint'
+import { useDesignSystemStore } from './canvas/design-system-store'
 
 describe('design turn prompt', () => {
   it('builds a parallel page fanout prompt with one delegate_task per artifact', () => {
@@ -43,10 +46,37 @@ describe('design turn prompt', () => {
     expect(prompt).toContain('label: page:community')
     expect(prompt).toContain('Act as the design director for the fanout')
     expect(prompt).toContain('real content, concrete states, and a clear primary action')
+    expect(prompt).toContain('Design target: Web')
+    expect(prompt).toContain('1280x800 desktop web')
     expect(prompt).toContain('Modify ONLY `.kun-design/doc/landing/v1.html` and `.kun-design/doc/landing/DESIGN.md`')
     expect(prompt).toContain('Modify ONLY `.kun-design/doc/community/v1.html` and `.kun-design/doc/community/DESIGN.md`')
     expect(prompt).toContain('Design delivery checklist')
     expect(prompt).toContain('Do NOT modify sibling files')
+  })
+
+  it('carries the selected app target into every parallel page child prompt', () => {
+    const prompt = buildParallelDesignPagesPrompt({
+      workspaceRoot: '/workspace',
+      projectBrief: 'A habit tracker app',
+      designContext: { designTarget: 'app' },
+      jobs: [
+        {
+          artifactId: 'home',
+          title: 'Today',
+          relativePath: '.kun-design/doc/today/v1.html',
+          designMdPath: '.kun-design/doc/today/DESIGN.md',
+          brief: 'Today screen with habit streaks and check-ins',
+          screenManifest: []
+        }
+      ]
+    })
+
+    expect(prompt).toContain('label: page:home')
+    expect(prompt).toContain('Design target: App')
+    expect(prompt).toContain('390x844 phone portrait')
+    expect(prompt).toContain('mobile app screens')
+    expect(prompt).not.toContain('Design target: Web')
+    expect(prompt.indexOf('Design target: App')).toBeLessThan(prompt.indexOf('Job 1: Today'))
   })
 
   it('allows only the reserved HTML and companion design notes files for HTML turns', () => {
@@ -60,11 +90,14 @@ describe('design turn prompt', () => {
     })
 
     expect(prompt).toContain('Design notes file: .kun-design/screen/DESIGN.md')
+    expect(prompt).toContain('Design target: Web')
+    expect(prompt).toContain('1280x800 desktop web')
     expect(prompt).toContain(
       'Modify ONLY `.kun-design/screen/v1.html` and `.kun-design/screen/DESIGN.md`'
     )
     expect(prompt).toContain('it has already been pre-created')
     expect(prompt).toContain('responsive to arbitrary canvas frame sizes')
+    expect(prompt).not.toContain('HTML iteration discipline')
     expect(prompt).toContain('Resize-adaptive HTML contract')
     expect(prompt).toContain('Treat the canvas frame/webview as a live, resizable viewport')
     expect(prompt).toContain('Do not lock the page to a fixed desktop canvas')
@@ -88,6 +121,24 @@ describe('design turn prompt', () => {
     expect(prompt).toContain('Content realism')
     expect(prompt).toContain('no dead `href="#"` links or visual-only buttons')
     expect(prompt).toContain('Handoff notes')
+  })
+
+  it('biases screen prompts toward mobile app frames when the design target is app', () => {
+    const options: ScreenTurnOptions = {
+      target: 'screen',
+      mode: 'text',
+      text: 'Create a habit detail screen',
+      artifactRelativePath: '.kun-design/habit/v1.html',
+      workspaceRoot: '/workspace',
+      screenName: 'Habit Detail',
+      screenManifest: [],
+      designContext: { designTarget: 'app' }
+    }
+    const prompt = buildDesignTurnPrompt(options)
+
+    expect(prompt).toContain('Design target: App')
+    expect(prompt).toContain('390x844 phone portrait')
+    expect(prompt).toContain('mobile app screens')
   })
 
   it('passes selected screen frame details and notes file for screen turns', () => {
@@ -165,7 +216,16 @@ describe('design turn prompt', () => {
     expect(prompt).toContain('Other pages already in this project')
     expect(prompt).toContain('"Home" → .kun-design/home/v1.html (prototype href: ../home/v1.html) — Landing page')
     expect(prompt).toContain('"Chat" (420x720) → .kun-design/chat/v1.html (prototype href: ../chat/v1.html)')
-    expect(prompt).toContain('real `<a href="...">` links')
+    expect(prompt).toContain('Prototype link markup contract')
+    expect(prompt).toContain('Use `<a href="...">` for navigation items')
+    expect(prompt).toContain('data-prototype-href')
+    expect(prompt).toContain('data-prototype-target="Exact Screen Title"')
+    expect(prompt).toContain('history.pushState')
+    expect(prompt).toContain('history.replaceState')
+    expect(prompt).toContain('history.back()')
+    expect(prompt).toContain('history.go(-1)')
+    expect(prompt).toContain('role="button"` or `role="tab"')
+    expect(prompt).toContain('tabindex="0"')
     expect(prompt).toContain('Do NOT modify sibling files')
   })
 
@@ -200,6 +260,34 @@ describe('design turn prompt', () => {
     expect(prompt).toContain('Tag: <h1>')
     expect(prompt).toContain('Current text: Hello World')
     expect(prompt).toContain('Treat this selected element as the binding target')
+    expect(prompt).toContain('HTML iteration discipline')
+    expect(prompt).toContain('prefer surgical `edit` calls over full rewrites')
+    expect(prompt).toContain('Preserve unrelated DOM order')
+    expect(prompt).toContain('existing prototype links')
+    expect(prompt).toContain(
+      'Selected-element edit: locate `body > main:nth-of-type(1) > h1:nth-of-type(1)`'
+    )
+    expect(prompt).toContain('Do not duplicate, relocate, or restyle unrelated sections')
+  })
+
+  it('adds iteration edit discipline for existing screen edits without requiring an element selection', () => {
+    const options: ScreenTurnOptions = {
+      target: 'screen',
+      mode: 'text',
+      text: 'Tighten the pricing card spacing',
+      artifactRelativePath: '.kun-design/pricing/v2.html',
+      basePath: '.kun-design/pricing/v1.html',
+      workspaceRoot: '/workspace',
+      screenName: 'Pricing',
+      screenManifest: []
+    }
+    const prompt = buildDesignTurnPrompt(options)
+
+    expect(prompt).toContain('HTML iteration discipline')
+    expect(prompt).toContain('read the current design first')
+    expect(prompt).toContain('CSS variables')
+    expect(prompt).toContain('media queries')
+    expect(prompt).not.toContain('Selected-element edit:')
   })
 
   it('injects previous HTML quality findings into iteration prompts', () => {
@@ -472,6 +560,43 @@ describe('design turn prompt', () => {
     expect(nextPrompt).not.toContain('Design-system lint flagged')
   })
 
+  it('keeps code canvas lint feedback separate from design canvas lint feedback', () => {
+    setLastLintFindings([
+      {
+        code: 'low-contrast',
+        shapeId: 'design_text',
+        message: 'Design text contrast needs repair.'
+      }
+    ])
+    setLastLintFindings(
+      [
+        {
+          code: 'small-hit-target',
+          shapeId: 'code_button',
+          message: 'Code whiteboard button needs a larger hit target.'
+        }
+      ],
+      'code-canvas:thread-1'
+    )
+
+    const codePrompt = buildCodeCanvasTurnPrompt({
+      workspaceRoot: '/ws',
+      canvasFeedbackKey: 'code-canvas:thread-1'
+    })
+    expect(codePrompt).toContain('Code whiteboard button needs a larger hit target.')
+    expect(codePrompt).not.toContain('Design text contrast needs repair.')
+
+    const designPrompt = buildDesignTurnPrompt({
+      target: 'canvas',
+      mode: 'text',
+      text: 'fix critique findings',
+      artifactRelativePath: '.kun-design/board/canvas.json',
+      workspaceRoot: '/ws'
+    })
+    expect(designPrompt).toContain('Design text contrast needs repair.')
+    expect(designPrompt).not.toContain('Code whiteboard button needs a larger hit target.')
+  })
+
   it('renders previous canvas-op errors so the agent can self-correct', () => {
     const prompt = buildDesignTurnPrompt({
       target: 'canvas',
@@ -490,11 +615,134 @@ describe('design turn prompt', () => {
 
   it('canvas turn prompt frames screen creation as a dedicated design tool call', () => {
     const prompt = buildCodeCanvasTurnPrompt({ workspaceRoot: '/ws' })
-    expect(prompt).toContain('dedicated design tools')
+    expect(prompt).toContain('dedicated canvas tools')
+    expect(prompt).toContain('Code sidebar whiteboard')
     expect(prompt).toContain('do not ask the user to manually create a canvas first')
     expect(prompt).toContain('`design_create_screen`')
-    expect(prompt).toContain('call the real design tools')
+    expect(prompt).toContain('Web -> desktop 1280x800, App -> mobile 390x844')
+    expect(prompt).toContain('Omit width/height/devicePreset unless the user asks for a custom device or breakpoint')
+    expect(prompt).toContain('omitted dimensions follow the current target')
+    expect(prompt).toContain('Web -> saas/web components, App -> mobile/app components')
+    expect(prompt).toContain('call the real canvas tools')
+    expect(prompt).toContain('SKETCH A SCREEN OR UI FRAME')
+    expect(prompt).toContain('No HTML artifact is generated in Code mode')
+    expect(prompt).toContain('UI frame default is 1280x800 desktop web for explicit UI mockups only')
+    expect(prompt).toContain('Code architecture, dependency, data-flow, and debugging diagrams are freeform whiteboard shapes')
+    expect(prompt).toContain('In Code mode this creates plain editable frame shapes only; no HTML is generated.')
+    expect(prompt).toContain('there is no follow-up HTML generation in Code mode')
+    expect(prompt).toContain('Code-mode whiteboard override')
+    expect(prompt).toContain('creates plain editable frame shapes here')
+    expect(prompt).toContain('does NOT trigger follow-up HTML screen generation')
+    expect(prompt).toContain('(empty canvas)')
+    expect(prompt).not.toContain('Default screen frame')
+    expect(prompt).not.toContain('the system generates its HTML afterwards')
+    expect(prompt).not.toContain('The system auto-generates HTML afterwards')
+    expect(prompt).not.toContain('each gets its HTML generated afterwards')
+    expect(prompt).not.toContain('the system will AUTOMATICALLY generate the HTML content')
     expect(prompt).not.toContain('```design_canvas')
+  })
+
+  it('code canvas prompt carries the current whiteboard brief', () => {
+    const prompt = buildCodeCanvasTurnPrompt({
+      workspaceRoot: '/ws',
+      text: 'Sketch a checkout flow on the code whiteboard'
+    })
+
+    expect(prompt).toContain('Brief:')
+    expect(prompt).toContain('Sketch a checkout flow on the code whiteboard')
+    expect(prompt).toContain('Code-mode whiteboard override')
+  })
+
+  it('code canvas prompt prioritizes architecture and flow diagrams over screen creation', () => {
+    const codePrompt = buildCodeCanvasTurnPrompt({ workspaceRoot: '/ws' })
+    expect(codePrompt).toContain('MAP CODE / ARCHITECTURE / FLOW')
+    expect(codePrompt).toContain('system architecture, code structure, module relationships')
+    expect(codePrompt).toContain('Do NOT use `design_create_screen` unless they explicitly ask for a UI screen mockup')
+    expect(codePrompt).toContain('services/modules as frames or rects')
+    expect(codePrompt).toContain('data/events as arrows')
+
+    const designPrompt = buildDesignTurnPrompt({
+      target: 'canvas',
+      mode: 'text',
+      text: 'Map the code architecture',
+      artifactRelativePath: '.kun-design/board/canvas.json',
+      workspaceRoot: '/ws'
+    })
+    expect(designPrompt).not.toContain('MAP CODE / ARCHITECTURE / FLOW')
+    expect(designPrompt).not.toContain('services/modules as frames or rects')
+  })
+
+  it('design canvas prompt keeps HTML-generation guidance for screen creation', () => {
+    const prompt = buildDesignTurnPrompt({
+      target: 'canvas',
+      mode: 'text',
+      text: 'Create a landing page screen',
+      artifactRelativePath: '.kun-design/board/canvas.json',
+      workspaceRoot: '/ws'
+    })
+
+    expect(prompt).toContain('BUILD OR REDESIGN A SCREEN')
+    expect(prompt).toContain('The system auto-generates HTML afterwards')
+    expect(prompt).toContain('the system will AUTOMATICALLY generate the HTML content')
+    expect(prompt).not.toContain('Code sidebar whiteboard')
+    expect(prompt).not.toContain('No HTML artifact is generated in Code mode')
+  })
+
+  it('code canvas prompt renders previous op errors for self-correction', () => {
+    const prompt = buildCodeCanvasTurnPrompt({
+      workspaceRoot: '/ws',
+      previousOpErrors: [
+        {
+          code: 'PARENT_NOT_FOUND',
+          message: 'Parent frame "missing_parent" was not found.',
+          suggestion: 'Use an existing frame id from the snapshot.'
+        }
+      ]
+    })
+
+    expect(prompt).toContain('YOUR PREVIOUS canvas attempt had errors')
+    expect(prompt).toContain('Parent frame "missing_parent" was not found.')
+    expect(prompt).toContain('Use an existing frame id from the snapshot.')
+    expect(prompt).toContain('Code-mode whiteboard override')
+  })
+
+  it('code canvas prompt uses only explicitly supplied design-system context', () => {
+    const store = useDesignSystemStore.getState()
+    store.resetSystem()
+    store.setToken({ name: 'global/stale', kind: 'color', value: '#ef4444' })
+
+    try {
+      const promptWithoutContext = buildCodeCanvasTurnPrompt({ workspaceRoot: '/ws' })
+      expect(promptWithoutContext).not.toContain('global/stale')
+      expect(promptWithoutContext).not.toContain('#ef4444')
+
+      const promptWithContext = buildCodeCanvasTurnPrompt({
+        workspaceRoot: '/ws',
+        canvasDesignSystem: {
+          tokens: {
+            'thread/primary': { name: 'thread/primary', kind: 'color', value: '#14b8a6' }
+          },
+          components: {}
+        }
+      })
+      expect(promptWithContext).toContain('thread/primary')
+      expect(promptWithContext).toContain('#14b8a6')
+      expect(promptWithContext).not.toContain('global/stale')
+    } finally {
+      store.resetSystem()
+    }
+  })
+
+  it('code canvas prompt honors the current app target', () => {
+    const prompt = buildCodeCanvasTurnPrompt({
+      workspaceRoot: '/ws',
+      designContext: { designTarget: 'app' }
+    })
+
+    expect(prompt).toContain('Design target: App')
+    expect(prompt).toContain('UI frame default is 390x844 phone portrait for explicit UI mockups only')
+    expect(prompt).toContain('new 390x844 UI frame placeholders')
+    expect(prompt).toContain('- Target: App')
   })
 
   it('includes placement guidance for new screen coordinates', () => {
@@ -517,6 +765,7 @@ describe('design turn prompt', () => {
     })
 
     expect(prompt).toContain('The snapshot includes `placement`')
+    expect(prompt).toContain('new 1280x800 target screen frames')
     expect(prompt).toContain('prefer omitting `x`/`y`')
     expect(prompt).toContain('placement.recommendedSlots')
     expect(prompt).toContain('"recommendedSlots"')
@@ -584,6 +833,31 @@ describe('design turn prompt', () => {
     expect(prompt).toContain(
       'do not guess or reconstruct a path from the shape name, position, or any other field'
     )
+  })
+
+  it('carries app target sizing into code-to-design prompts', () => {
+    const prompt = buildDesignFromCodePrompt({
+      sourceRelativePath: 'src/App.tsx',
+      artifactRelativePath: '.kun-design/doc/reverse/v1.html',
+      workspaceRoot: '/workspace',
+      designContext: { designTarget: 'app' }
+    })
+
+    expect(prompt).toContain('Design target: App')
+    expect(prompt).toContain('390x844 phone portrait')
+    expect(prompt).toContain('- Target: App')
+  })
+
+  it('carries default web target sizing into image-node prompts', () => {
+    const prompt = buildDesignImageNodePrompt({
+      text: 'Product preview',
+      outputRelativePath: '.kun-design/doc/preview.png',
+      workspaceRoot: '/workspace'
+    })
+
+    expect(prompt).toContain('Design target: Web')
+    expect(prompt).toContain('1280x800 responsive web page')
+    expect(prompt).toContain('- Target: Web')
   })
 
   it('tells the agent the canvas.json directory on a canvas turn', () => {

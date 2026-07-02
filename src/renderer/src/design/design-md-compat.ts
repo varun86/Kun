@@ -1,6 +1,7 @@
 import { DESIGN_SYSTEM_DISPLAY, formatDesignContextLines, type DesignContext } from './design-context'
 import type { DesignArtifact } from './design-types'
 import type { ComponentDef, DesignSystem, DesignToken, DesignTokenKind, TextStyleSpec } from './canvas/design-system-types'
+import { resolvePrototypeViewportFrame } from './prototype-player'
 
 /** Project-level Stitch/code-agent compatible design brief export. */
 export const STITCH_DESIGN_MD_PATH = '.kun-design/DESIGN.md'
@@ -98,14 +99,20 @@ function formatPrototypeLinks(artifact: DesignArtifact): string[] {
   })
 }
 
-function formatScreens(artifacts: readonly DesignArtifact[] | undefined): string[] {
+function formatScreens(
+  artifacts: readonly DesignArtifact[] | undefined,
+  designTarget: DesignContext['designTarget']
+): string[] {
   const html = (artifacts ?? []).filter((artifact) => artifact.kind === 'html')
   if (html.length === 0) return ['_No HTML screens exported yet._']
   const lines: string[] = []
   for (const artifact of html) {
     const role = artifact.role ? `; role: ${artifact.role}` : ''
     const direction = artifact.direction ? `; direction: ${artifact.direction.name}` : ''
-    lines.push(`- **${artifact.title}** (${artifact.id}): HTML ${code(artifact.relativePath)}; notes ${code(artifact.designMdPath)}${role}${direction}`)
+    const viewportFrame = resolvePrototypeViewportFrame(artifact, designTarget)
+    lines.push(
+      `- **${artifact.title}** (${artifact.id}): HTML ${code(artifact.relativePath)}; frame ${viewportFrame.width}x${viewportFrame.height}; notes ${code(artifact.designMdPath)}${role}${direction}`
+    )
     const links = formatPrototypeLinks(artifact)
     if (links.length > 0) lines.push(...links)
   }
@@ -150,7 +157,7 @@ export function buildStitchDesignMarkdown(options: BuildStitchDesignMarkdownOpti
     '',
     '## Screens and Prototype Flow',
     '',
-    ...formatScreens(options.artifacts),
+    ...formatScreens(options.artifacts, options.designContext?.designTarget),
     '',
     '## Implementation Guidance',
     '',
@@ -296,6 +303,59 @@ function extractPreset(text: string): DesignContext['designSystemPreset'] | unde
   return undefined
 }
 
+function cleanTargetLabel(value: string): string {
+  return value
+    .replace(/[`*_]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+}
+
+function isDesignTargetFieldLabel(value: string): boolean {
+  return /^(?:design\s+)?(?:target|platform|surface)$/.test(cleanTargetLabel(value))
+}
+
+function targetFromFieldValue(value: string): DesignContext['designTarget'] | undefined {
+  const normalized = cleanTargetLabel(value)
+  if (!normalized) return undefined
+  if (
+    /^(?:app|application)\b/.test(normalized) ||
+    /\b(?:mobile|native)\s+app\b/.test(normalized) ||
+    /\b(?:phone|ios|android)\b/.test(normalized)
+  ) {
+    return 'app'
+  }
+  if (
+    /^(?:web|website|web\s+app|browser|desktop)\b/.test(normalized) ||
+    /\b(?:responsive\s+web|desktop\s+web|browser|website|webpage|web-page)\b/.test(normalized)
+  ) {
+    return 'web'
+  }
+  return undefined
+}
+
+function extractDesignTarget(text: string): DesignContext['designTarget'] | undefined {
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.trim()
+    if (!line) continue
+
+    const tableCells = line
+      .split('|')
+      .map((cell) => cell.trim())
+      .filter(Boolean)
+    if (tableCells.length >= 2 && isDesignTargetFieldLabel(tableCells[0])) {
+      const tableTarget = targetFromFieldValue(tableCells[1])
+      if (tableTarget) return tableTarget
+    }
+
+    const field = line.match(/^(?:[-*]\s*)?(?:\*\*)?\s*((?:design\s+)?(?:target|platform|surface))(?:\*\*)?\s*(?::|[-=])\s*(.+)$/i)
+    if (!field) continue
+    const target = targetFromFieldValue(field[2] ?? '')
+    if (target) return target
+  }
+  return undefined
+}
+
 export function importStitchDesignMarkdown(raw: string): ImportedStitchDesign | null {
   const parsed = parseStitchDesignMarkdown(raw)
   if (!parsed) return null
@@ -312,6 +372,8 @@ export function importStitchDesignMarkdown(raw: string): ImportedStitchDesign | 
   if (firstColor) contextPatch.brandColor = firstColor
   const preset = extractPreset(parsed.sections['Design Context'] ?? '')
   if (preset) contextPatch.designSystemPreset = preset
+  const designTarget = extractDesignTarget(parsed.sections['Design Context'] ?? '')
+  if (designTarget) contextPatch.designTarget = designTarget
   return {
     title: parsed.title,
     contextPatch,

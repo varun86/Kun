@@ -15,6 +15,13 @@ import {
   placeRectInViewportAvoiding,
   rectsAlmostEqual
 } from './canvas/canvas-placement'
+import {
+  normalizeDesignTarget,
+  defaultDevicePresetForDesignTarget,
+  defaultFrameSizeForDesignTarget,
+  defaultPreviewNodeSizeForDesignTarget,
+  type DesignTarget
+} from './design-context'
 import { useCanvasSelectionStore } from './canvas/canvas-selection-store'
 import { useCanvasShapeStore } from './canvas/canvas-shape-store'
 import { useCanvasViewportStore } from './canvas/canvas-viewport-store'
@@ -47,6 +54,30 @@ export function findDesignBoardArtifact(
   )[0] ?? null
 }
 
+export function buildHtmlArtifactSyncKey(
+  artifacts: readonly DesignArtifact[],
+  designTarget: DesignTarget | undefined
+): string {
+  return [
+    normalizeDesignTarget(designTarget),
+    ...artifacts
+      .filter((artifact) => artifact.kind === 'html')
+      .map((artifact) => {
+        const node = artifact.node
+        return [
+          artifact.id,
+          artifact.title,
+          node?.x ?? '',
+          node?.y ?? '',
+          node?.width ?? '',
+          node?.height ?? '',
+          node?.sizeMode ?? '',
+          node?.viewMode ?? ''
+        ].join(':')
+	      })
+  ].join('|')
+}
+
 function cloneDocument(doc: CanvasDocument): CanvasDocument {
   return {
     ...doc,
@@ -70,18 +101,30 @@ function nodeRect(node: DesignArtifactNode): Rect {
 
 function artifactNodeIsDefault(node: DesignArtifactNode | undefined, index: number): boolean {
   if (!node) return false
-  if (rectsAlmostEqual(nodeRect(node), defaultDesignArtifactNode(index))) return true
+  const matchesDefaultNode = (slotIndex: number): boolean => {
+    const base = defaultDesignArtifactNode(slotIndex)
+    return [
+      base,
+      { ...base, ...defaultPreviewNodeSizeForDesignTarget('web') },
+      { ...base, ...defaultPreviewNodeSizeForDesignTarget('app') }
+    ].some((candidate) => rectsAlmostEqual(nodeRect(node), candidate))
+  }
+  if (matchesDefaultNode(index)) return true
   // Persisted preview-card defaults can survive artifact reordering. Treat any
   // of the legacy default grid slots as implicit so they don't shrink board
   // screens to the old 420x340 card size.
   for (let i = 0; i < 60; i += 1) {
-    if (i !== index && rectsAlmostEqual(nodeRect(node), defaultDesignArtifactNode(i))) return true
+    if (i !== index && matchesDefaultNode(i)) return true
   }
   return false
 }
 
 function shouldUseArtifactNode(node: DesignArtifactNode | undefined, index: number): node is DesignArtifactNode {
-  return Boolean(node && !artifactNodeIsDefault(node, index))
+  return Boolean(node && node.sizeMode !== 'auto' && !artifactNodeIsDefault(node, index))
+}
+
+function autoArtifactNode(node: DesignArtifactNode | undefined, index: number): DesignArtifactNode | null {
+  return node?.sizeMode === 'auto' && !artifactNodeIsDefault(node, index) ? node : null
 }
 
 function frameNodePatch(shape: CanvasShape): DesignArtifactNode | null {
@@ -98,20 +141,28 @@ function frameNodePatch(shape: CanvasShape): DesignArtifactNode | null {
   }
 }
 
-function frameMatchesNode(shape: CanvasShape, node: DesignArtifactNode): boolean {
-  return rectsAlmostEqual(
-    { x: shape.x, y: shape.y, width: shape.width, height: shape.height },
-    nodeRect(node)
-  )
-}
-
-function frameNodeSizeMode(shape: CanvasShape, artifact: DesignArtifact): DesignArtifactNode['sizeMode'] {
+function frameNodeSizeMode(
+  shape: CanvasShape,
+  artifact: DesignArtifact,
+  index: number,
+  designTarget: DesignTarget | undefined
+): DesignArtifactNode['sizeMode'] {
   const current = artifact.node
   // A freshly generated screen has no node yet: default to 'auto' so the frame
-  // keeps following its real content height. Only an explicit vertical resize
-  // (which breaks frameMatchesNode) promotes it to 'manual' and locks the size.
+  // follows the current Web/App target. An explicit resize promotes it to
+  // 'manual' and locks the size.
   if (!current) return 'auto'
-  return current.sizeMode === 'auto' && frameMatchesNode(shape, current) ? 'auto' : 'manual'
+  if (current.sizeMode === 'auto') return 'auto'
+  if (
+    artifactNodeIsDefault(current, index) &&
+    rectsAlmostEqual(
+      { x: shape.x, y: shape.y, width: shape.width, height: shape.height },
+      { x: shape.x, y: shape.y, ...defaultFrameSizeForDesignTarget(designTarget) }
+    )
+  ) {
+    return 'auto'
+  }
+  return 'manual'
 }
 
 export function syncHtmlArtifactsToBoardDocument(
@@ -125,12 +176,15 @@ export function syncHtmlArtifactsToBoardDocument(
   const addedFrameIds: string[] = []
   const updatedFrameIds: string[] = []
   let next: CanvasDocument | null = null
+  const designTarget = useDesignWorkspaceStore.getState().designContext.designTarget
+  const defaultFrameSize = defaultFrameSizeForDesignTarget(designTarget)
+  const defaultDevicePreset = defaultDevicePresetForDesignTarget(designTarget)
   const framesByArtifactId = linkedHtmlFrames(doc)
   const autoPlaceArtifacts = htmlArtifacts.filter((artifact, index) =>
     !framesByArtifactId.has(artifact.id) && !shouldUseArtifactNode(artifact.node, index)
   )
   const autoRects = layoutRectsInViewport(
-    autoPlaceArtifacts.map(() => ({ width: 1280, height: 800 })),
+    autoPlaceArtifacts.map(() => defaultFrameSize),
     useCanvasViewportStore.getState().vbox
   )
   const occupiedAutoRects: Rect[] = Array.from(framesByArtifactId.values()).map((shape) => ({
@@ -145,10 +199,22 @@ export function syncHtmlArtifactsToBoardDocument(
   htmlArtifacts.forEach((artifact, index) => {
     const existing = framesByArtifactId.get(artifact.id)
     const customNode = shouldUseArtifactNode(artifact.node, index) ? artifact.node : null
+    const autoNode = autoArtifactNode(artifact.node, index)
     if (existing) {
       const patch: Partial<CanvasShape> = {}
       const nextName = artifact.title || existing.name
       if (existing.name !== nextName) patch.name = nextName
+      if (!customNode) {
+        if (!rectsAlmostEqual({ x: existing.x, y: existing.y, width: existing.width, height: existing.height }, {
+          x: existing.x,
+          y: existing.y,
+          ...defaultFrameSize
+        })) {
+          patch.width = defaultFrameSize.width
+          patch.height = defaultFrameSize.height
+        }
+        if (existing.devicePreset !== defaultDevicePreset) patch.devicePreset = defaultDevicePreset
+      }
       if (Object.keys(patch).length > 0) {
         if (!next) next = cloneDocument(doc)
         next.objects[existing.id] = { ...next.objects[existing.id], ...patch }
@@ -163,14 +229,16 @@ export function syncHtmlArtifactsToBoardDocument(
 
     const rect = customNode
       ? nodeRect(customNode)
+      : autoNode
+        ? { x: autoNode.x, y: autoNode.y, ...defaultFrameSize }
       : occupiedAutoRects.length === 0
-        ? autoRects[autoIndex++] ?? { x: 0, y: 0, width: 1280, height: 800 }
+        ? autoRects[autoIndex++] ?? { x: 0, y: 0, ...defaultFrameSize }
         : placeRectInViewportAvoiding(
-            { width: 1280, height: 800 },
+            defaultFrameSize,
             useCanvasViewportStore.getState().vbox,
             [...occupiedAutoRects, ...placedAutoRects]
           )
-    const frame = createHtmlFrameShape(artifact.title || 'Screen', rect.x, rect.y, artifact.id, 'desktop')
+    const frame = createHtmlFrameShape(artifact.title || 'Screen', rect.x, rect.y, artifact.id, defaultDevicePreset)
     frame.width = rect.width
     frame.height = rect.height
     frame.name = artifact.title || frame.name
@@ -192,13 +260,14 @@ export function syncHtmlFrameNodesToArtifacts(doc: CanvasDocument): void {
   const designStore = useDesignWorkspaceStore.getState()
   for (const shape of Object.values(doc.objects)) {
     if (!shape || !isHtmlFrame(shape) || !shape.htmlArtifactId) continue
-    const artifact = designStore.artifacts.find((item) => item.id === shape.htmlArtifactId)
+    const artifactIndex = designStore.artifacts.findIndex((item) => item.id === shape.htmlArtifactId)
+    const artifact = artifactIndex >= 0 ? designStore.artifacts[artifactIndex] : undefined
     if (!artifact) continue
     const patch = frameNodePatch(shape)
     if (!patch) continue
     const nextNode = {
       ...patch,
-      sizeMode: frameNodeSizeMode(shape, artifact),
+      sizeMode: frameNodeSizeMode(shape, artifact, artifactIndex, designStore.designContext.designTarget),
       viewMode: artifact.node?.viewMode ?? patch.viewMode
     }
     const current = artifact.node
@@ -277,8 +346,10 @@ export function createScreenFrameArtifact(options: {
   const brief = options.brief?.trim() ?? ''
   const titleSource = options.title?.trim() || brief || 'Screen'
   const title = titleSource.length > 48 ? `${titleSource.slice(0, 48)}...` : titleSource
-  const width = Math.max(240, options.width ?? 1280)
-  const height = Math.max(180, options.height ?? 800)
+  const defaultFrameSize = defaultFrameSizeForDesignTarget(state.designContext.designTarget)
+  const defaultDevicePreset = defaultDevicePresetForDesignTarget(state.designContext.designTarget)
+  const width = Math.max(240, options.width ?? defaultFrameSize.width)
+  const height = Math.max(180, options.height ?? defaultFrameSize.height)
   const vbox = useCanvasViewportStore.getState().vbox
   const occupied = Object.values(useCanvasShapeStore.getState().document.objects)
     .filter((shape): shape is CanvasShape => Boolean(shape) && shape.visible !== false && isHtmlFrame(shape))
@@ -301,7 +372,7 @@ export function createScreenFrameArtifact(options: {
   })
   useDesignWorkspaceStore.getState().setActiveArtifact(options.boardArtifactId)
 
-  const shape = createHtmlFrameShape(title, x, y, artifactId, 'desktop')
+  const shape = createHtmlFrameShape(title, x, y, artifactId, defaultDevicePreset)
   shape.width = width
   shape.height = height
   useCanvasShapeStore.getState().addShape(shape)

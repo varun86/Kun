@@ -11,6 +11,7 @@ import { DesignCanvas } from './DesignCanvas'
 type Props = {
   leftSidebarCollapsed: boolean
   onToggleLeftSidebar: () => void
+  busy?: boolean
   onOpenAgentSettings?: () => void
   onImplementDesign?: (artifact: DesignArtifact) => void
   onScreenCreated?: (shapeId: string, userPrompt: string, brief?: string) => void
@@ -27,6 +28,7 @@ type Props = {
 export function DesignWorkspaceView({
   leftSidebarCollapsed,
   onToggleLeftSidebar,
+  busy = false,
   onOpenAgentSettings,
   onImplementDesign,
   onScreenCreated,
@@ -62,6 +64,7 @@ export function DesignWorkspaceView({
         <DesignCanvas
           leftSidebarCollapsed={leftSidebarCollapsed}
           onToggleLeftSidebar={onToggleLeftSidebar}
+          busy={busy}
           onOpenAgentSettings={onOpenAgentSettings}
           onImplementDesign={onImplementDesign}
           onScreenCreated={onScreenCreated}

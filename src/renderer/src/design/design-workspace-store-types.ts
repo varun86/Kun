@@ -8,7 +8,7 @@ import type {
   DesignIntentMode,
   DesignViewport
 } from './design-types'
-import type { DesignContext } from './design-context'
+import type { DesignContext, DesignTarget } from './design-context'
 
 /** Progress of an in-flight Stitch-style multi-page generation run. */
 export type DesignPagesRunState = {
@@ -117,6 +117,7 @@ export type DesignWorkspaceState = {
   duplicateArtifact: (artifactId: string) => Promise<void>
   selectArtifactVersion: (artifactId: string, versionId: string) => void
   setDesignIntentMode: (mode: DesignIntentMode) => void
+  setDesignTarget: (target: DesignTarget) => void
   setMultiPageMode: (on: boolean) => void
   /** Update or clear (null) the multi-page run progress. */
   setPagesRun: (state: DesignPagesRunState | null) => void

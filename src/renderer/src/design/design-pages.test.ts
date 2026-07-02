@@ -168,6 +168,23 @@ describe('parsePagesPlan', () => {
     expect(pages[0]).toEqual({ title: 'P0', brief: 'b0' })
   })
 
+  it('dedupes titles after whitespace and case normalization', () => {
+    const text = [
+      '```pages',
+      '[',
+      '  { "title": "Account  Settings", "brief": "First settings" },',
+      '  { "title": "account settings", "brief": "Duplicate settings" },',
+      '  { "title": "Billing", "brief": "Billing" }',
+      ']',
+      '```'
+    ].join('\n')
+
+    expect(parsePagesPlan(text)).toEqual([
+      { title: 'Account  Settings', brief: 'First settings' },
+      { title: 'Billing', brief: 'Billing' }
+    ])
+  })
+
   it('returns [] when nothing parses', () => {
     expect(parsePagesPlan('no json here')).toEqual([])
     expect(parsePagesPlan('```pages\nnot json\n```')).toEqual([])
@@ -203,6 +220,127 @@ describe('buildPrototypeLinksForPage', () => {
       }
     ])
   })
+
+  it('resolves planner links with unique partial screen title matches', () => {
+    const links = buildPrototypeLinksForPage(
+      {
+        title: 'Dashboard',
+        brief: 'Ops dashboard',
+        linksTo: ['Settings']
+      },
+      '.kun-design/doc/dashboard/v1.html',
+      [
+        { title: 'Dashboard', artifactId: 'dashboard', relativePath: '.kun-design/doc/dashboard/v1.html' },
+        { title: 'Account Settings', artifactId: 'settings', relativePath: '.kun-design/doc/settings/v1.html' },
+        { title: 'Reports', artifactId: 'reports', relativePath: '.kun-design/doc/reports/v1.html' }
+      ]
+    )
+
+    expect(links).toEqual([
+      {
+        targetTitle: 'Account Settings',
+        targetArtifactId: 'settings',
+        href: '../settings/v1.html'
+      }
+    ])
+  })
+
+  it('does not guess ambiguous partial screen title matches', () => {
+    const links = buildPrototypeLinksForPage(
+      {
+        title: 'Dashboard',
+        brief: 'Ops dashboard',
+        linksTo: ['Settings']
+      },
+      '.kun-design/doc/dashboard/v1.html',
+      [
+        { title: 'Dashboard', artifactId: 'dashboard', relativePath: '.kun-design/doc/dashboard/v1.html' },
+        { title: 'Account Settings', artifactId: 'account-settings', relativePath: '.kun-design/doc/account/v1.html' },
+        { title: 'Team Settings', artifactId: 'team-settings', relativePath: '.kun-design/doc/team/v1.html' }
+      ]
+    )
+
+    expect(links).toEqual([
+      {
+        targetTitle: 'Settings'
+      }
+    ])
+  })
+
+  it('adds a concrete fallback link when explicit planner links do not match any page', () => {
+    const links = buildPrototypeLinksForPage(
+      {
+        title: 'Dashboard',
+        brief: 'Ops dashboard',
+        primaryAction: 'Review queue',
+        linksTo: ['Approvals']
+      },
+      '.kun-design/doc/dashboard/v1.html',
+      [
+        { title: 'Dashboard', artifactId: 'dashboard', relativePath: '.kun-design/doc/dashboard/v1.html' },
+        { title: 'Review Queue', artifactId: 'review-queue', relativePath: '.kun-design/doc/review/v1.html' },
+        { title: 'Settings', artifactId: 'settings', relativePath: '.kun-design/doc/settings/v1.html' }
+      ]
+    )
+
+    expect(links).toEqual([
+      {
+        targetTitle: 'Approvals'
+      },
+      {
+        targetTitle: 'Review Queue',
+        targetArtifactId: 'review-queue',
+        href: '../review/v1.html',
+        label: 'Review queue'
+      }
+    ])
+  })
+
+  it('does not guess duplicate exact screen title matches', () => {
+    const links = buildPrototypeLinksForPage(
+      {
+        title: 'Dashboard',
+        brief: 'Ops dashboard',
+        linksTo: ['Settings']
+      },
+      '.kun-design/doc/dashboard/v1.html',
+      [
+        { title: 'Dashboard', artifactId: 'dashboard', relativePath: '.kun-design/doc/dashboard/v1.html' },
+        { title: 'Settings', artifactId: 'account-settings', relativePath: '.kun-design/doc/account-settings/v1.html' },
+        { title: 'Settings', artifactId: 'project-settings', relativePath: '.kun-design/doc/project-settings/v1.html' }
+      ]
+    )
+
+    expect(links).toEqual([
+      {
+        targetTitle: 'Settings'
+      }
+    ])
+  })
+
+  it('adds a deterministic next-page prototype fallback when the planner omits links', () => {
+    const links = buildPrototypeLinksForPage(
+      {
+        title: 'Home',
+        brief: 'Landing',
+        primaryAction: 'Open checkout'
+      },
+      '.kun-design/doc/home/v1.html',
+      [
+        { title: 'Home', artifactId: 'home', relativePath: '.kun-design/doc/home/v1.html' },
+        { title: 'Checkout', artifactId: 'checkout', relativePath: '.kun-design/doc/checkout/v1.html' }
+      ]
+    )
+
+    expect(links).toEqual([
+      {
+        targetTitle: 'Checkout',
+        targetArtifactId: 'checkout',
+        href: '../checkout/v1.html',
+        label: 'Open checkout'
+      }
+    ])
+  })
 })
 
 describe('buildDesignPlanPrompt', () => {
@@ -223,9 +361,25 @@ describe('buildDesignPlanPrompt', () => {
     expect(prompt).toContain('states')
     expect(prompt).toContain('linksTo')
     expect(prompt).toContain('clickable prototype flow')
+    expect(prompt).toContain('exactly matches another planned screen title')
+    expect(prompt).toContain('connected prototype rather than isolated screens')
+    expect(prompt).toContain('data-prototype-href')
     expect(prompt).toContain('realistic domain nouns')
-    expect(prompt).toContain('mobile/desktop behavior')
+    expect(prompt).toContain('mobile/desktop web behavior')
+    expect(prompt).toContain('unique')
+    expect(prompt).toContain('without ambiguity')
     expect(prompt).toContain('Design delivery checklist')
+  })
+
+  it('plans app targets as mobile app prototypes', () => {
+    const prompt = buildDesignPlanPrompt({
+      brief: 'A habit tracker app',
+      workspaceRoot: '/ws',
+      designContext: { designTarget: 'app' }
+    })
+    expect(prompt).toContain('multi-page mobile app prototype')
+    expect(prompt).toContain('390x844 phone frame')
+    expect(prompt).toContain('App idea:')
   })
 })
 
