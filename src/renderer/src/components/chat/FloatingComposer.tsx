@@ -47,10 +47,12 @@ import type { AttachmentReference, ChatBlock, ReviewTarget } from '../../agent/t
 import { useChatStore } from '../../store/chat-store'
 import { normalizeWorkspaceRoot } from '../../lib/workspace-path'
 import {
+  composerFileReferenceKey,
   composerFileReferenceFromPath,
   filterWorkspaceFileMentionSuggestions,
   formatComposerFileMentionToken,
   getFileMentionAtCursor,
+  hasComposerFileMentionToken,
   isComposerDirectoryReference,
   removeComposerFileMentionToken,
   replaceFileMentionInInput,
@@ -110,7 +112,7 @@ import {
 } from './FloatingComposerExecutionPicker'
 import { ImagePreviewLightbox } from './ImagePreviewLightbox'
 import { useComposerDraft } from './use-composer-draft'
-import { useSpeechToTextSettings, useVoiceDictation } from './use-voice-dictation'
+import { usePromptOptimizationSettings, useSpeechToTextSettings, useVoiceDictation } from './use-voice-dictation'
 import { VoiceRecordingStrip } from './VoiceRecordingStrip'
 import type { ComposerChangedFile } from '../../lib/composer-change-summary'
 import type { DesignComposerContext } from '../../design/design-composer-context'
@@ -227,6 +229,13 @@ type Props = {
 }
 
 type SkillCommand = NonNullable<Props['skillCommands']>[number]
+
+export function shouldCaptureFileMentionCommitKey(
+  event: Pick<ReactKeyboardEvent<HTMLTextAreaElement>, 'key' | 'shiftKey' | 'metaKey' | 'ctrlKey'>
+): boolean {
+  if (event.key === 'Tab') return true
+  return event.key === 'Enter' && !event.shiftKey && !event.metaKey && !event.ctrlKey
+}
 
 const EMPTY_CONTEXT_BLOCKS: ChatBlock[] = []
 const EMPTY_MODEL_GROUPS: ModelProviderModelGroup[] = []
@@ -567,6 +576,7 @@ export function FloatingComposer({
   const userInput = useComposerUserInput(pendingUserInputBlock, resolveUserInput)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const speechToTextSettings = useSpeechToTextSettings()
+  const promptOptimizationSettings = usePromptOptimizationSettings()
   const dictationInputRef = useRef(input)
   useEffect(() => {
     dictationInputRef.current = input
@@ -675,11 +685,14 @@ export function FloatingComposer({
   const [goalPanelOpen, setGoalPanelOpen] = useState(false)
   const [contextCapacityOpen, setContextCapacityOpen] = useState(false)
   const [goalRuntimeNowMs, setGoalRuntimeNowMs] = useState(() => Date.now())
+  const [promptOptimizationBusy, setPromptOptimizationBusy] = useState(false)
+  const [promptOptimizationError, setPromptOptimizationError] = useState<string | null>(null)
   const composerRootRef = useRef<HTMLDivElement | null>(null)
   const composerMenuButtonRef = useRef<HTMLButtonElement | null>(null)
   const composerMenuPanelRef = useRef<HTMLDivElement | null>(null)
   const goalPanelRef = useRef<HTMLDivElement | null>(null)
   const contextCapacityRef = useRef<HTMLDivElement | null>(null)
+  const fileMentionPresenceRef = useRef<Map<string, boolean>>(new Map())
   const messageTokenCacheRef = useRef<WeakMap<object, number>>(new WeakMap())
   // Cache the last-known runtime capacity inputs. `runtimeInfo` (and thus these
   // props) goes null whenever the runtime drops/reconnects; without caching, the
@@ -1027,6 +1040,13 @@ export function FloatingComposer({
       ? false
     : !canSend
   const primaryActionLoading = !runtimeReady
+  const canOptimizePrompt =
+    promptOptimizationSettings?.enabled === true &&
+    canEditComposer &&
+    !promptOptimizationBusy &&
+    input.trim().length > 0 &&
+    typeof window !== 'undefined' &&
+    typeof window.kunGui?.optimizePrompt === 'function'
   const goalRuntimeStartedAtMs = goalRuntimeStartedAtRef.current
   const liveGoalElapsedSeconds =
     busy && activeThreadGoal?.status === 'active' && goalRuntimeStartedAtMs != null
@@ -1109,6 +1129,29 @@ export function FloatingComposer({
     fileReferences,
     showFileMentionMenu
   ])
+
+  useEffect(() => {
+    const previous = fileMentionPresenceRef.current
+    const next = new Map<string, boolean>()
+    const removedRelativePaths: string[] = []
+
+    for (const reference of fileReferences) {
+      const isDirectory = isComposerDirectoryReference(reference)
+      const key = composerFileReferenceKey(reference)
+      const present = hasComposerFileMentionToken(input, reference.relativePath, isDirectory)
+      if (previous.get(key) === true && !present) {
+        removedRelativePaths.push(reference.relativePath)
+      }
+      next.set(key, present)
+    }
+
+    fileMentionPresenceRef.current = next
+
+    if (!onRemoveFileReference || removedRelativePaths.length === 0) return
+    for (const relativePath of removedRelativePaths) {
+      onRemoveFileReference(relativePath)
+    }
+  }, [fileReferences, input, onRemoveFileReference])
 
   useEffect(() => {
     if (!composerMenuOpen && !goalPanelOpen) return
@@ -1353,6 +1396,33 @@ export function FloatingComposer({
     draft.focusComposer()
   }
 
+  const handlePromptOptimizationClick = (): void => {
+    if (!canOptimizePrompt) return
+    const sourceText = input
+    setPromptOptimizationBusy(true)
+    setPromptOptimizationError(null)
+    void window.kunGui.optimizePrompt({ text: sourceText })
+      .then((result) => {
+        if (!result.ok) {
+          setPromptOptimizationError(result.message)
+          return
+        }
+        setInput(result.text)
+        window.requestAnimationFrame(() => {
+          const textarea = draft.textareaRef.current
+          if (!textarea) return
+          textarea.focus()
+          const cursor = result.text.length
+          textarea.setSelectionRange(cursor, cursor)
+          setComposerCursor(cursor)
+        })
+      })
+      .catch((error) => {
+        setPromptOptimizationError(error instanceof Error ? error.message : String(error))
+      })
+      .finally(() => setPromptOptimizationBusy(false))
+  }
+
   const syncComposerCursor = (element = draft.textareaRef.current): void => {
     if (!element) return
     setComposerCursor(element.selectionStart ?? input.length)
@@ -1375,6 +1445,7 @@ export function FloatingComposer({
 
   const removeFileReference = (reference: ComposerFileReference): void => {
     onRemoveFileReference?.(reference.relativePath)
+    fileMentionPresenceRef.current.set(composerFileReferenceKey(reference), false)
     const nextInput = removeComposerFileMentionToken(
       input,
       reference.relativePath,
@@ -1491,9 +1562,11 @@ export function FloatingComposer({
         )
         return
       }
-      if ((event.key === 'Enter' || event.key === 'Tab') && highlightedFileMention) {
+      if (shouldCaptureFileMentionCommitKey(event)) {
         event.preventDefault()
-        applyFileMention(highlightedFileMention)
+        if (highlightedFileMention) {
+          applyFileMention(highlightedFileMention)
+        }
         return
       }
       if (event.key === 'Escape') {
@@ -2273,13 +2346,20 @@ export function FloatingComposer({
               </span>
             </div>
           ) : null}
+          {promptOptimizationError ? (
+            <div className="px-1">
+              <span className="min-w-0 break-words text-[12px] font-medium text-red-600 dark:text-red-300">
+                {promptOptimizationError}
+              </span>
+            </div>
+          ) : null}
           <div
-            className={`ds-composer-toolbar flex min-h-9 items-center gap-2 ${
+            className={`ds-composer-toolbar flex min-h-9 min-w-0 items-center gap-2 ${
               showToolbarStartControls ? 'justify-between' : 'justify-end'
             }`}
           >
             {showToolbarStartControls ? (
-              <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto overflow-y-hidden">
+              <div className="ds-composer-toolbar-start flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto overflow-y-hidden">
                 {showComposerMenuButton ? (
                   <>
                     <button
@@ -2326,8 +2406,8 @@ export function FloatingComposer({
               </div>
             ) : null}
             <div
-              className={`flex min-w-0 items-center justify-end gap-1.5 ${
-                stretchModelPicker || dictation.status === 'recording' ? 'flex-1' : 'shrink-0'
+              className={`ds-composer-toolbar-actions flex min-w-0 items-center justify-end gap-1.5 ${
+                showToolbarStartControls || stretchModelPicker || dictation.status === 'recording' ? 'flex-1' : 'shrink-0'
               }`}
             >
               {dictation.status === 'recording' ? (
@@ -2419,7 +2499,7 @@ export function FloatingComposer({
                   composerReasoningEffort={composerReasoningEffort}
                   lockVisionToTextModelSwitch={lockVisionToTextModelSwitch}
                   canChangeModel={canChangeModel}
-                  stretch={stretchModelPicker}
+                  stretch={stretchModelPicker || showToolbarStartControls}
                   onComposerModelChange={onComposerModelChange}
                   onComposerReasoningEffortChange={onComposerReasoningEffortChange}
                   onConfigureProviders={onConfigureProviders}
@@ -2449,6 +2529,22 @@ export function FloatingComposer({
                     <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2.2} />
                   ) : (
                     <Mic className="h-4 w-4" strokeWidth={2} />
+                  )}
+                </button>
+              ) : null}
+              {promptOptimizationSettings?.enabled === true ? (
+                <button
+                  type="button"
+                  disabled={!canOptimizePrompt}
+                  onClick={handlePromptOptimizationClick}
+                  className="ds-no-drag flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-ds-muted transition hover:bg-ds-hover hover:text-ds-ink disabled:cursor-not-allowed disabled:opacity-60"
+                  aria-label={promptOptimizationBusy ? t('composerPromptOptimizing') : t('composerPromptOptimize')}
+                  title={promptOptimizationBusy ? t('composerPromptOptimizing') : t('composerPromptOptimize')}
+                >
+                  {promptOptimizationBusy ? (
+                    <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2.2} />
+                  ) : (
+                    <Sparkles className="h-4 w-4" strokeWidth={2} />
                   )}
                 </button>
               ) : null}

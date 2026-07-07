@@ -65,6 +65,14 @@ type CompactionTimelineBlock = Extract<ChatBlock, { kind: 'compaction' }>
 
 const TURN_PAGE_SIZE = 18
 const AUTO_COLLAPSE_THRESHOLD = 24
+const TIMELINE_JUMP_RAIL_RESERVED_PX = 84
+const TIMELINE_JUMP_RAIL_GAP_PX = 18
+const TIMELINE_JUMP_RAIL_FALLBACK_LEFT_PX = 16
+const TIMELINE_JUMP_RAIL_STAGE_INSET_PX = 16
+const TIMELINE_JUMP_RAIL_PREVIEW_OFFSET_PX = 34
+const TIMELINE_JUMP_RAIL_PREVIEW_WIDTH_PX = 416
+const TIMELINE_JUMP_RAIL_PREVIEW_MARGIN_PX = 16
+const TIMELINE_JUMP_RAIL_PREVIEW_CONTAINER_GUTTER_PX = 88
 
 export function goalTimelinePaddingClass(route: 'chat' | 'claw', hasActiveGoal: boolean): string {
   return route === 'chat' && hasActiveGoal ? 'pb-32 md:pb-40' : 'pb-10'
@@ -87,6 +95,39 @@ export function activeTimelineTurnKey(
     active = position.key
   }
   return active
+}
+
+export function timelineJumpRailLeft(
+  containerWidth: number,
+  contentMaxWidth: number,
+  measuredContentLeft?: number
+): number {
+  const contentWidth = Math.min(
+    containerWidth,
+    Math.max(0, contentMaxWidth),
+    Math.max(0, containerWidth - TIMELINE_JUMP_RAIL_RESERVED_PX)
+  )
+  const fallbackContentLeft = Math.max(0, (containerWidth - contentWidth) / 2)
+  const contentLeft =
+    typeof measuredContentLeft === 'number' && Number.isFinite(measuredContentLeft)
+      ? measuredContentLeft
+      : fallbackContentLeft
+  const stageLeft = Math.max(TIMELINE_JUMP_RAIL_FALLBACK_LEFT_PX, TIMELINE_JUMP_RAIL_STAGE_INSET_PX)
+  return Math.max(stageLeft, contentLeft - TIMELINE_JUMP_RAIL_GAP_PX)
+}
+
+export function timelineJumpRailPreviewLeft(
+  railLeft: number,
+  containerWidth: number
+): number {
+  const previewWidth = Math.min(
+    TIMELINE_JUMP_RAIL_PREVIEW_WIDTH_PX,
+    Math.max(0, containerWidth - TIMELINE_JUMP_RAIL_PREVIEW_CONTAINER_GUTTER_PX)
+  )
+  const minLeft = Math.max(TIMELINE_JUMP_RAIL_FALLBACK_LEFT_PX, TIMELINE_JUMP_RAIL_PREVIEW_MARGIN_PX)
+  const maxLeft = Math.max(minLeft, containerWidth - previewWidth - TIMELINE_JUMP_RAIL_PREVIEW_MARGIN_PX)
+  const preferredLeft = railLeft + TIMELINE_JUMP_RAIL_PREVIEW_OFFSET_PX
+  return Math.min(Math.max(preferredLeft, minLeft), maxLeft)
 }
 
 function blockScrollStamp(block: ChatBlock | undefined): string {
@@ -121,6 +162,20 @@ function turnPreview(turn: Turn, fallback: string): string {
   if (!text) return fallback
   const oneLine = text.replace(/\s+/g, ' ')
   return oneLine.length > 48 ? `${oneLine.slice(0, 47).trimEnd()}...` : oneLine
+}
+
+function turnPromptPreview(turn: Turn, fallback: string): string {
+  if (turn.user && isBackgroundShellNoticeBlock(turn.user)) {
+    const display = turn.user.meta?.displayText?.trim()
+    if (display) return display.replace(/\s+/g, ' ')
+  }
+  const text = turn.user?.text.trim() ?? ''
+  if (!text) return fallback
+  return text.replace(/\s+/g, ' ')
+}
+
+export function timelineJumpWaveLevel(index: number): number {
+  return [2, 4, 5, 3, 1][index % 5] ?? 3
 }
 
 function processBlockHasError(block: ChatBlock): boolean {
@@ -203,8 +258,19 @@ export function MessageTimeline({
   const hasContent = blocks.length > 0 || live || liveReasoning
   const endRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
+  const contentRef = useRef<HTMLDivElement>(null)
   const turnRefMap = useRef(new Map<string, HTMLDivElement>())
   const [activeTurnKey, setActiveTurnKey] = useState<string | null>(null)
+  const [jumpRailLayout, setJumpRailLayout] = useState<{
+    railLeft: number
+    previewLeft: number
+    top: number
+  } | null>(null)
+  const [jumpRailPreview, setJumpRailPreview] = useState<{
+    title: string
+    prompt: string
+    top: number
+  } | null>(null)
 
   const turns = useMemo(() => groupTurns(blocks), [blocks])
   const latestBlock = blocks[blocks.length - 1]
@@ -241,7 +307,7 @@ export function MessageTimeline({
   )
   const visibleTurnAnchors = useMemo(
     () => {
-      const anchors: { key: string; label: string; title: string }[] = []
+      const anchors: { key: string; label: string; title: string; prompt: string; waveLevel: number }[] = []
       let questionIndex = turns
         .slice(0, hiddenTurnCount)
         .filter((turn) => turn.user)
@@ -255,7 +321,9 @@ export function MessageTimeline({
         anchors.push({
           key,
           label: String(questionIndex),
-          title: turnPreview(turn, t('timelineJumpTurn', { index: questionIndex }))
+          title: turnPreview(turn, t('timelineJumpTurn', { index: questionIndex })),
+          prompt: turnPromptPreview(turn, t('timelineJumpTurn', { index: questionIndex })),
+          waveLevel: timelineJumpWaveLevel(anchors.length)
         })
       })
       return anchors
@@ -302,6 +370,44 @@ export function MessageTimeline({
     }
   }, [visibleTurnAnchors])
 
+  useEffect(() => {
+    const container = containerRef.current
+    const content = contentRef.current
+    if (!container || visibleTurnAnchors.length <= 2) {
+      setJumpRailLayout(null)
+      return
+    }
+    const update = (): void => {
+      const rect = container.getBoundingClientRect()
+      const contentRect = content?.getBoundingClientRect()
+      const contentStyle = content ? window.getComputedStyle(content) : null
+      const contentPaddingLeft = Number.parseFloat(contentStyle?.paddingLeft ?? '')
+      const measuredContentLeft = contentRect
+        ? contentRect.left - rect.left + (Number.isFinite(contentPaddingLeft) ? contentPaddingLeft : 0)
+        : undefined
+      const rawMaxWidth = window.getComputedStyle(document.documentElement).getPropertyValue('--ds-chat-content-max-width')
+      const parsedMaxWidth = Number.parseFloat(rawMaxWidth)
+      const contentMaxWidth = Number.isFinite(parsedMaxWidth) ? parsedMaxWidth : 896
+      const railLeft = timelineJumpRailLeft(rect.width, contentMaxWidth, measuredContentLeft)
+      setJumpRailLayout({
+        railLeft,
+        previewLeft: timelineJumpRailPreviewLeft(railLeft, rect.width),
+        top: container.scrollTop + container.clientHeight / 2
+      })
+    }
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(container)
+    if (content) observer.observe(content)
+    container.addEventListener('scroll', update, { passive: true })
+    window.addEventListener('resize', update)
+    return () => {
+      observer.disconnect()
+      container.removeEventListener('scroll', update)
+      window.removeEventListener('resize', update)
+    }
+  }, [visibleTurnAnchors.length])
+
   // Tick a clock while a turn is running so the live "Worked for Xs" updates.
   const [tickNow, setTickNow] = useState(() => Date.now())
   useEffect(() => {
@@ -318,31 +424,67 @@ export function MessageTimeline({
     target.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
 
+  const showJumpRailPreview = (
+    anchor: { label: string; title: string; prompt: string },
+    node: HTMLButtonElement
+  ): void => {
+    const container = containerRef.current
+    const rect = node.getBoundingClientRect()
+    const containerRect = container?.getBoundingClientRect()
+    setJumpRailPreview({
+      title: t('timelineJumpTurn', { index: anchor.label }),
+      prompt: anchor.prompt || anchor.title,
+      top: container && containerRect
+        ? rect.top - containerRect.top + container.scrollTop + rect.height / 2
+        : rect.top + rect.height / 2
+    })
+  }
+
   return (
     <TimelineFilePreviewWorkspaceProvider workspaceRoot={filePreviewWorkspaceRoot}>
     <InjectedMemoryLookupProvider workspaceRoot={workspaceRoot}>
     <div ref={containerRef} className="ds-no-drag relative flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden">
-      {visibleTurnAnchors.length > 2 ? (
+      {visibleTurnAnchors.length > 2 && jumpRailLayout ? (
         <nav
           aria-label={t('timelineJumpRailLabel')}
           className="timeline-jump-rail"
+          style={{
+            left: `${jumpRailLayout.railLeft}px`,
+            top: `${jumpRailLayout.top}px`
+          }}
         >
           {visibleTurnAnchors.map((anchor) => (
             <button
               key={anchor.key}
               type="button"
               className={`timeline-jump-rail-button${activeTurnKey === anchor.key ? ' is-active' : ''}`}
+              data-wave-level={anchor.waveLevel}
               title={anchor.title}
               aria-label={anchor.title}
               aria-current={activeTurnKey === anchor.key ? 'true' : undefined}
+              onMouseEnter={(event) => showJumpRailPreview(anchor, event.currentTarget)}
+              onFocus={(event) => showJumpRailPreview(anchor, event.currentTarget)}
+              onMouseLeave={() => setJumpRailPreview(null)}
+              onBlur={() => setJumpRailPreview(null)}
               onClick={() => jumpToTurn(anchor.key)}
-            >
-              {anchor.label}
-            </button>
+            />
           ))}
         </nav>
       ) : null}
-      <div className={`ds-message-timeline-content ds-chat-column-inset ds-chat-content-max-width mx-auto flex w-full min-w-0 flex-col gap-8 pt-8 ${
+      {jumpRailPreview && jumpRailLayout ? (
+        <div
+          className="timeline-jump-rail-preview"
+          style={{
+            left: `${jumpRailLayout.previewLeft}px`,
+            top: `${jumpRailPreview.top}px`
+          }}
+          role="tooltip"
+        >
+          <div className="timeline-jump-rail-preview-title">{jumpRailPreview.title}</div>
+          <div className="timeline-jump-rail-preview-text">{jumpRailPreview.prompt}</div>
+        </div>
+      ) : null}
+      <div ref={contentRef} className={`ds-message-timeline-content ds-chat-column-inset ds-chat-content-max-width mx-auto flex w-full min-w-0 flex-col gap-8 pt-8 ${
         goalTimelinePaddingClass(heroRoute, Boolean(activeThreadGoal))
       }`}>
         {!hasContent || !activeThreadId ? (
