@@ -1292,6 +1292,8 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
       pageCount: result.pageCount,
       text: result.pages.map((page) => page.text).join('\n\n'),
       hasText: result.hasText,
+      ocrApplied: result.ocrApplied,
+      ocrPageCount: result.ocrPageCount,
       truncated: result.truncated
     }
   })
