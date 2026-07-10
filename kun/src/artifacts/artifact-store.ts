@@ -9,7 +9,7 @@
  * file-backed store (persistent, survives restart for replay/audit).
  */
 
-import { mkdir, readFile, readdir, rename, rm, writeFile, stat as fsStat, open as fsOpen } from 'node:fs/promises'
+import { chmod, mkdir, readFile, readdir, rename, rm, writeFile, stat as fsStat, open as fsOpen } from 'node:fs/promises'
 import { join } from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 import { artifactId, summarizeForModel, type ArtifactSummary } from './artifact-summary.js'
@@ -199,7 +199,10 @@ export class FileArtifactStore implements ArtifactStore {
   ) {}
 
   private async ensureDir(): Promise<void> {
-    if (!this.ready) this.ready = mkdir(this.dir, { recursive: true }).then(() => undefined)
+    if (!this.ready) {
+      this.ready = mkdir(this.dir, { recursive: true, mode: 0o700 })
+        .then(async () => { await chmod(this.dir, 0o700) })
+    }
     return this.ready
   }
 
@@ -232,8 +235,8 @@ export class FileArtifactStore implements ArtifactStore {
       const contentTemporaryPath = `${this.contentPath(id)}.${suffix}`
       const metaTemporaryPath = `${this.metaPath(id)}.${suffix}`
       try {
-        await writeFile(contentTemporaryPath, input.content, 'utf8')
-        await writeFile(metaTemporaryPath, JSON.stringify(meta), 'utf8')
+        await writeFile(contentTemporaryPath, input.content, { encoding: 'utf8', mode: 0o600 })
+        await writeFile(metaTemporaryPath, JSON.stringify(meta), { encoding: 'utf8', mode: 0o600 })
         await rename(contentTemporaryPath, this.contentPath(id))
         await rename(metaTemporaryPath, this.metaPath(id))
       } finally {
