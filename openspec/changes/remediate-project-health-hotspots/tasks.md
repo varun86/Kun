@@ -11,7 +11,7 @@
 
 - [x] 2.1 Extract the Kun child process state and single-flight start/stop ownership
   from module globals into a `KunProcessController` while preserving exports.
-- [ ] 2.2 Extract readiness polling, health probing, startup timeout, and unexpected
+- [x] 2.2 Extract readiness polling, health probing, startup timeout, and unexpected
   exit policy behind a runtime health monitor.
 - [ ] 2.3 Extract generated-config and hot-apply/restart decision logic behind a
   runtime configuration service.

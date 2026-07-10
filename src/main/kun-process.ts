@@ -59,7 +59,6 @@ import {
   type ClawScheduleMcpLaunchConfig
 } from './claw-schedule-mcp-config'
 import { defaultKunDataDir } from './runtime/kun-adapter'
-import { isKunHealthResponseBody } from './kun-health'
 import { resolveClaudeBinary } from './agent-sdk-installer'
 import { appendManagedLogLine } from './logger'
 import {
@@ -74,8 +73,12 @@ import {
   KunProcessController,
   type KunUnexpectedExitInfo
 } from './runtime/kun-process-controller'
+import {
+  waitForKunStartup
+} from './runtime/kun-runtime-health-monitor'
 
 export type { KunUnexpectedExitInfo } from './runtime/kun-process-controller'
+export { resolveKunStartupTimeoutMs } from './runtime/kun-runtime-health-monitor'
 
 /**
  * Called when a READY kun child exits without the GUI asking for it.
@@ -89,48 +92,6 @@ export function setKunUnexpectedExitHandler(
 }
 
 const execFileAsync = promisify(execFile)
-const KUN_READY_PREFIX = 'KUN_READY '
-const KUN_STARTUP_TIMEOUT_FLOOR_MS = 15_000
-const KUN_STARTUP_TIMEOUT_CEILING_MS = 600_000
-
-/**
- * How long to wait for a freshly spawned kun to report ready before giving
- * up and killing it. kun emits its ready marker only after the HTTP server
- * is actually listening, which it does only after sqlite opens, the thread
- * store finishes its backfill, usage carryover replays every thread's
- * events, and the MCP fast-connect race runs. On a slow disk (Windows +
- * antivirus scans) with a large history this routinely exceeds 45s, leaving
- * the runtime stuck in a "did not report ready within 45000ms" → SIGTERM →
- * respawn loop (#188, #544).
- *
- * A generous ceiling is free on fast machines: the parallel /health probe
- * in waitForKunStartup settles the moment the server responds, and a process
- * that actually crashes rejects immediately via its exit event rather than
- * waiting out the timeout. Only a slow-but-progressing boot uses the extra
- * runway. Windows gets the larger default; everything is overridable via the
- * KUN_STARTUP_TIMEOUT_MS env var (milliseconds, clamped to 15s–10min) for
- * extreme cases without a rebuild.
- */
-export function resolveKunStartupTimeoutMs(
-  platform: NodeJS.Platform,
-  env: NodeJS.ProcessEnv
-): number {
-  const raw = env.KUN_STARTUP_TIMEOUT_MS
-  if (raw && raw.trim()) {
-    const parsed = Number(raw)
-    if (Number.isFinite(parsed)) {
-      return Math.min(
-        KUN_STARTUP_TIMEOUT_CEILING_MS,
-        Math.max(KUN_STARTUP_TIMEOUT_FLOOR_MS, Math.floor(parsed))
-      )
-    }
-  }
-  return platform === 'win32' ? 90_000 : 60_000
-}
-
-const KUN_STARTUP_TIMEOUT_MS = resolveKunStartupTimeoutMs(process.platform, process.env)
-const KUN_STARTUP_HEALTH_POLL_MS = 500
-const KUN_STARTUP_HEALTH_REQUEST_TIMEOUT_MS = 1_000
 const KUN_STOP_GRACE_MS = 5_000
 const KUN_STOP_FORCE_MS = 1_000
 const STDERR_TAIL_MAX_CHARS = 32_768
@@ -1647,133 +1608,4 @@ function allocateTcpPort(host: string): Promise<number> {
       })
     })
   })
-}
-
-async function waitForKunStartup(startedChild: ChildProcess, port?: number): Promise<void> {
-  if (startedChild.exitCode !== null) {
-    throw new Error(describeKunExit(startedChild.exitCode, null))
-  }
-  await new Promise<void>((resolve, reject) => {
-    let settled = false
-    let stdoutBuffer = ''
-    let stderrTail = ''
-    let healthProbeInFlight = false
-    let healthConfirmed = false
-    let readyMarkerSeen = false
-    const timer = setTimeout(() => {
-      if (settled) return
-      settled = true
-      cleanup()
-      reject(new Error(describeKunStartupTimeout(stderrTail, readyMarkerSeen && Boolean(port))))
-    }, KUN_STARTUP_TIMEOUT_MS)
-    // The stdout ready marker can lag behind the actual server (pipe
-    // buffering) or get lost in unusual spawn environments; the HTTP
-    // health endpoint is the ground truth, so poll it in parallel.
-    // A passing health probe alone is enough to settle (it proves the
-    // server responds). The stdout marker alone is NOT enough — it only
-    // proves the process started, not that the HTTP server can serve.
-    const healthTimer = port
-      ? setInterval(() => {
-          if (settled || healthProbeInFlight) return
-          healthProbeInFlight = true
-          void probeKunHealth(port)
-            .then((healthy) => {
-              if (healthy) {
-                healthConfirmed = true
-                settleReady()
-              }
-            })
-            .finally(() => {
-              healthProbeInFlight = false
-            })
-        }, KUN_STARTUP_HEALTH_POLL_MS)
-      : null
-    const cleanup = (): void => {
-      clearTimeout(timer)
-      if (healthTimer) clearInterval(healthTimer)
-      startedChild.removeListener('exit', onExit)
-      startedChild.removeListener('error', onError)
-      startedChild.stdout?.removeListener('data', onStdout)
-      startedChild.stderr?.removeListener('data', onStderr)
-    }
-    const tryParseReady = (): boolean => {
-      const markerIndex = stdoutBuffer.indexOf(KUN_READY_PREFIX)
-      if (markerIndex < 0) return false
-      const afterPrefix = stdoutBuffer.slice(markerIndex + KUN_READY_PREFIX.length)
-      const newlineIndex = afterPrefix.indexOf('\n')
-      if (newlineIndex < 0) return false
-      const jsonLine = afterPrefix.slice(0, newlineIndex).trim()
-      if (!jsonLine) return false
-      try {
-        const parsed = JSON.parse(jsonLine) as { service?: string; mode?: string; port?: number }
-        return parsed.service === 'kun' && parsed.mode === 'serve' && typeof parsed.port === 'number'
-      } catch {
-        return false
-      }
-    }
-    const settleReady = (): void => {
-      if (settled) return
-      settled = true
-      cleanup()
-      resolve()
-    }
-    const onStdout = (chunk: Buffer | string): void => {
-      stdoutBuffer = appendTail(stdoutBuffer, String(chunk), STDERR_TAIL_MAX_CHARS * 2)
-      if (!tryParseReady()) return
-      readyMarkerSeen = true
-      if (healthConfirmed || !healthTimer) {
-        settleReady()
-      }
-    }
-    const onStderr = (chunk: Buffer | string): void => {
-      stderrTail = appendTail(stderrTail, String(chunk))
-    }
-    const onExit = (code: number | null, signal: NodeJS.Signals | null): void => {
-      if (settled) return
-      settled = true
-      cleanup()
-      reject(new Error(describeKunExit(code, signal, stderrTail)))
-    }
-    const onError = (error: Error): void => {
-      if (settled) return
-      settled = true
-      cleanup()
-      reject(error)
-    }
-    startedChild.stdout?.on('data', onStdout)
-    startedChild.stderr?.on('data', onStderr)
-    startedChild.once('exit', onExit)
-    startedChild.once('error', onError)
-  })
-}
-
-function describeKunExit(
-  code: number | null,
-  signal: NodeJS.Signals | null,
-  stderrTail = ''
-): string {
-  const suffix = stderrTail.trim() ? `\n${stderrTail.trim()}` : ''
-  if (signal) return `Kun exited during startup with signal ${signal}${suffix}`
-  if (typeof code === 'number') return `Kun exited during startup with code ${code}${suffix}`
-  return `Kun exited during startup${suffix}`
-}
-
-function describeKunStartupTimeout(stderrTail: string, sawReadyMarker = false): string {
-  const suffix = stderrTail.trim() ? `\n${stderrTail.trim()}` : ''
-  if (sawReadyMarker) {
-    return `Kun reported ready but did not pass health checks within ${KUN_STARTUP_TIMEOUT_MS}ms${suffix}`
-  }
-  return `Kun did not report ready within ${KUN_STARTUP_TIMEOUT_MS}ms${suffix}`
-}
-
-async function probeKunHealth(port: number): Promise<boolean> {
-  try {
-    const response = await fetch(`http://127.0.0.1:${port}/health`, {
-      signal: AbortSignal.timeout(KUN_STARTUP_HEALTH_REQUEST_TIMEOUT_MS)
-    })
-    if (!response.ok) return false
-    return isKunHealthResponseBody(await response.text())
-  } catch {
-    return false
-  }
 }
