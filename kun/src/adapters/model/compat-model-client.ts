@@ -25,6 +25,18 @@ import {
 import { createProxyFetch } from './proxy-fetch.js'
 import { wrapUntrustedContent } from '../../security/untrusted-content.js'
 import { resolveCompatModelCapabilities } from './compat-capabilities.js'
+import {
+  DEFAULT_MODEL_STREAM_LIMITS,
+  ModelStreamResourceBudget,
+  ModelStreamResourceLimitError,
+  type ModelStreamLimits,
+  type PendingToolCall
+} from './model-stream-resource-budget.js'
+
+export {
+  DEFAULT_MODEL_STREAM_LIMITS,
+  type ModelStreamLimits
+} from './model-stream-resource-budget.js'
 
 /**
  * Configuration for the compatible HTTP model client. Chat
@@ -143,19 +155,6 @@ type AnthropicMessageResponse = {
 }
 
 type ModelStopReason = Extract<ModelStreamChunk, { kind: 'completed' }>['stopReason']
-type PendingToolCall = {
-  index?: number
-  name?: string
-  /**
-   * Keep streamed argument fragments separate until completion. Repeated
-   * `arguments += delta` turns a provider sending token-sized deltas into an
-   * O(n²) copy loop; the raw argument is joined once, after its size is known
-   * to be safe to parse.
-   */
-  argumentParts: string[]
-  argumentBytes: number
-  argumentFragments: number
-}
 type StreamReadResult =
   | { kind: 'chunk'; value?: Uint8Array; done: boolean }
   | { kind: 'timeout' }
@@ -169,234 +168,6 @@ type StreamPayloadResult = {
 }
 
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 45_000
-export type ModelStreamLimits = {
-  maxBufferBytes: number
-  maxFrameBytes: number
-  maxTotalBytes: number
-  maxFrames: number
-  maxOutputBytes: number
-  maxPendingToolCalls: number
-  maxPendingToolArgumentBytes: number
-  maxTotalPendingToolArgumentBytes: number
-  maxToolArgumentFragments: number
-  maxTotalToolArgumentFragments: number
-  maxCompletedToolCalls: number
-  maxCompletedToolArgumentBytes: number
-}
-
-/** Hard upper bounds for untrusted provider stream state. */
-export const DEFAULT_MODEL_STREAM_LIMITS: ModelStreamLimits = {
-  // Responses native image generation sends its base64 result as one SSE
-  // frame. The image path permits multi-megabyte payloads, so this must be
-  // comfortably above that value while still keeping one malformed frame
-  // bounded.
-  maxBufferBytes: 20 * 1024 * 1024,
-  maxFrameBytes: 16 * 1024 * 1024,
-  maxTotalBytes: 32 * 1024 * 1024,
-  maxFrames: 8_192,
-  maxOutputBytes: 8 * 1024 * 1024,
-  maxPendingToolCalls: 32,
-  maxPendingToolArgumentBytes: 1 * 1024 * 1024,
-  maxTotalPendingToolArgumentBytes: 4 * 1024 * 1024,
-  maxToolArgumentFragments: 1_024,
-  maxTotalToolArgumentFragments: 4_096,
-  maxCompletedToolCalls: 32,
-  maxCompletedToolArgumentBytes: 4 * 1024 * 1024
-}
-
-class ModelStreamResourceLimitError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = 'ModelStreamResourceLimitError'
-  }
-}
-
-/**
- * Per-response accounting for data retained while parsing an untrusted model
- * stream. Keeping this state next to the parser makes every protocol share
- * the same hard limits instead of relying on the agent loop to clean up after
- * an oversized response has already been parsed.
- */
-class ModelStreamResourceBudget {
-  private totalBytes = 0
-  private frames = 0
-  private outputBytes = 0
-  private pendingArgumentBytes = 0
-  private pendingArgumentFragments = 0
-  private completedToolCalls = 0
-  private completedToolArgumentBytes = 0
-
-  constructor(readonly limits: ModelStreamLimits) {}
-
-  addInboundBytes(bytes: number): void {
-    this.totalBytes += bytes
-    if (this.totalBytes > this.limits.maxTotalBytes) {
-      throw new ModelStreamResourceLimitError(
-        `model stream exceeded ${this.limits.maxTotalBytes} total response bytes`
-      )
-    }
-  }
-
-  addFrame(bytes: number): void {
-    this.frames += 1
-    if (this.frames > this.limits.maxFrames) {
-      throw new ModelStreamResourceLimitError(`model stream exceeded ${this.limits.maxFrames} SSE frames`)
-    }
-    if (bytes > this.limits.maxFrameBytes) {
-      throw new ModelStreamResourceLimitError(`model stream exceeded ${this.limits.maxFrameBytes} SSE frame bytes`)
-    }
-  }
-
-  pendingCall(
-    pending: Map<string, PendingToolCall>,
-    callId: string,
-    index: number | undefined
-  ): PendingToolCall {
-    const existing = pending.get(callId)
-    if (existing) {
-      if (index !== undefined) existing.index = index
-      return existing
-    }
-    if (pending.size >= this.limits.maxPendingToolCalls) {
-      throw new ModelStreamResourceLimitError(
-        `model stream exceeded ${this.limits.maxPendingToolCalls} pending tool calls`
-      )
-    }
-    const created: PendingToolCall = {
-      ...(index !== undefined ? { index } : {}),
-      argumentParts: [],
-      argumentBytes: 0,
-      argumentFragments: 0
-    }
-    pending.set(callId, created)
-    return created
-  }
-
-  bindPendingIndex(pendingByIndex: Map<number, string>, index: number, callId: string): void {
-    if (!pendingByIndex.has(index) && pendingByIndex.size >= this.limits.maxPendingToolCalls) {
-      throw new ModelStreamResourceLimitError(
-        `model stream exceeded ${this.limits.maxPendingToolCalls} pending tool-call indexes`
-      )
-    }
-    pendingByIndex.set(index, callId)
-  }
-
-  appendArguments(pending: PendingToolCall, value: string): void {
-    if (!value) return
-    const bytes = Buffer.byteLength(value, 'utf8')
-    this.assertPendingArgumentCapacity(pending, bytes, 1)
-    pending.argumentParts.push(value)
-    pending.argumentBytes += bytes
-    pending.argumentFragments += 1
-    this.pendingArgumentBytes += bytes
-    this.pendingArgumentFragments += 1
-  }
-
-  replaceArguments(pending: PendingToolCall, value: string): void {
-    const bytes = value ? Buffer.byteLength(value, 'utf8') : 0
-    const fragments = value ? 1 : 0
-    this.assertPendingArgumentCapacity(
-      pending,
-      bytes - pending.argumentBytes,
-      fragments - pending.argumentFragments,
-      bytes,
-      fragments
-    )
-    this.pendingArgumentBytes += bytes - pending.argumentBytes
-    this.pendingArgumentFragments += fragments - pending.argumentFragments
-    pending.argumentParts = value ? [value] : []
-    pending.argumentBytes = bytes
-    pending.argumentFragments = fragments
-  }
-
-  pendingArguments(pending: PendingToolCall): string {
-    return pending.argumentParts.join('')
-  }
-
-  completeToolCall(argumentsRaw: string): void {
-    const bytes = Buffer.byteLength(argumentsRaw, 'utf8')
-    if (bytes > this.limits.maxPendingToolArgumentBytes) {
-      throw new ModelStreamResourceLimitError(
-        `model stream exceeded ${this.limits.maxPendingToolArgumentBytes} bytes for one tool argument`
-      )
-    }
-    if (this.completedToolCalls + 1 > this.limits.maxCompletedToolCalls) {
-      throw new ModelStreamResourceLimitError(
-        `model stream exceeded ${this.limits.maxCompletedToolCalls} completed tool calls`
-      )
-    }
-    if (this.completedToolArgumentBytes + bytes > this.limits.maxCompletedToolArgumentBytes) {
-      throw new ModelStreamResourceLimitError(
-        `model stream exceeded ${this.limits.maxCompletedToolArgumentBytes} completed tool-argument bytes`
-      )
-    }
-    this.completedToolCalls += 1
-    this.completedToolArgumentBytes += bytes
-  }
-
-  removePendingCall(pending: Map<string, PendingToolCall>, callId: string): PendingToolCall | undefined {
-    const value = pending.get(callId)
-    if (!value) return undefined
-    pending.delete(callId)
-    this.pendingArgumentBytes -= value.argumentBytes
-    this.pendingArgumentFragments -= value.argumentFragments
-    return value
-  }
-
-  clearPendingCalls(pending: Map<string, PendingToolCall>): void {
-    for (const callId of pending.keys()) this.removePendingCall(pending, callId)
-  }
-
-  addOutput(chunks: readonly ModelStreamChunk[]): void {
-    let bytes = 0
-    for (const chunk of chunks) {
-      if (chunk.kind === 'assistant_text_delta' || chunk.kind === 'assistant_reasoning_delta') {
-        bytes += Buffer.byteLength(chunk.text, 'utf8')
-      }
-    }
-    if (this.outputBytes + bytes > this.limits.maxOutputBytes) {
-      throw new ModelStreamResourceLimitError(
-        `model stream exceeded ${this.limits.maxOutputBytes} response text and reasoning bytes`
-      )
-    }
-    this.outputBytes += bytes
-  }
-
-  private assertPendingArgumentCapacity(
-    pending: PendingToolCall,
-    byteDelta: number,
-    fragmentDelta: number,
-    replacementBytes?: number,
-    replacementFragments?: number
-  ): void {
-    const nextBytes = replacementBytes ?? pending.argumentBytes + byteDelta
-    const nextFragments = replacementFragments ?? pending.argumentFragments + fragmentDelta
-    if (nextBytes > this.limits.maxPendingToolArgumentBytes) {
-      throw new ModelStreamResourceLimitError(
-        `model stream exceeded ${this.limits.maxPendingToolArgumentBytes} bytes for one tool argument`
-      )
-    }
-    if (this.pendingArgumentBytes + byteDelta > this.limits.maxTotalPendingToolArgumentBytes) {
-      throw new ModelStreamResourceLimitError(
-        `model stream exceeded ${this.limits.maxTotalPendingToolArgumentBytes} total pending tool-argument bytes`
-      )
-    }
-    if (nextFragments > this.limits.maxToolArgumentFragments) {
-      throw new ModelStreamResourceLimitError(
-        `model stream exceeded ${this.limits.maxToolArgumentFragments} fragments for one tool argument`
-      )
-    }
-    if (this.pendingArgumentFragments + fragmentDelta > this.limits.maxTotalToolArgumentFragments) {
-      throw new ModelStreamResourceLimitError(
-        `model stream exceeded ${this.limits.maxTotalToolArgumentFragments} total tool-argument fragments`
-      )
-    }
-  }
-}
-// Anthropic Messages requires an explicit `max_tokens`. The old 4096 default
-// was far too small for reasoning models: their thinking tokens are drawn from
-// the SAME output budget, so a long think left almost nothing for the tool
-// call, truncating its arguments into invalid JSON. Give thinking models much
 // more headroom; a per-model `maxOutputTokens` capability still overrides both.
 const DEFAULT_MESSAGES_MAX_TOKENS = 8192
 const DEFAULT_MESSAGES_REASONING_MAX_TOKENS = 32_768
