@@ -38,7 +38,7 @@ description: Brand-grade visual craft for design work — design-system-first th
 Hold this bar on any visual work — HTML mockups, prototypes, real UI.
 
 ## 1. Design system is the source of truth
-- If \`.kun-design/DESIGN_SYSTEM.md\` exists in the workspace, read it first and honor it: brand color, tone, type, radius, density, the named preset. It is the contract shared between the design canvas and the code.
+- If \`.kun-design/design-system.json\` exists in the workspace, read it first and honor its structured tokens, component trees, slots, and variants. It is the contract shared between the design canvas and the code.
 - Derive every visual decision from tokens (color, spacing scale, radius, type scale), not ad-hoc values. Keep them consistent across the whole artifact.
 
 ## 2. Avoid generic AI tells

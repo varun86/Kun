@@ -17,7 +17,6 @@ import { takeLastLintFindings } from "../canvas/design-lint"
 import type { DerivedTokens } from "../design-token-extract"
 import type { DesignContextLocation, DesignHtmlElementContext } from "../design-composer-context"
 import { formatDesignHtmlQualityFindings, type DesignHtmlQualityFinding } from "../design-html-quality"
-import type { DesignModeSurfaceManifest } from '../design-mode/design-mode-surface'
 
 /**
  * Render the design tokens already extracted from the live design (palette +
@@ -124,8 +123,6 @@ export type DesignTurnOptions = {
    * into HTML/screen turns so the agent fixes quality issues during iteration.
    */
   qualityFindings?: DesignHtmlQualityFinding[]
-  /** Design mode surface/workflow contract for choosing agent tool lanes. */
-  designModeManifest?: DesignModeSurfaceManifest
 }
 
 /**

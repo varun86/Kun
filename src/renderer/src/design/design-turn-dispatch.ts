@@ -46,7 +46,7 @@ export function buildDesignTurnSendOverrides(options: DesignTurnSendOptions): Se
   return {
     displayText: options.displayText,
     ...buildAssistantModelOverrides(options),
-    ...(options.target === 'canvas' ? { guiDesignCanvas: true } : {}),
+    ...(options.target === 'canvas' ? { guiDesignCanvas: true, guiDesignMode: true } : {}),
     ...(attachmentIds.length ? { attachmentIds, attachments } : {})
   }
 }

@@ -14,6 +14,7 @@ export function createTurnRecord(input: {
   attachmentIds?: string[]
   guiPlan?: GuiPlanContextJson
   guiDesignCanvas?: boolean
+  guiDesignMode?: boolean
   mode?: ThreadMode
   disableUserInput?: boolean
   imContext?: boolean
@@ -41,6 +42,7 @@ export function createTurnRecord(input: {
     ...(reasoningEffort ? { reasoningEffort } : {}),
     ...(input.guiPlan ? { guiPlan: input.guiPlan } : {}),
     ...(input.guiDesignCanvas ? { guiDesignCanvas: true } : {}),
+    ...(input.guiDesignMode ? { guiDesignMode: true } : {}),
     ...(input.mode ? { mode: input.mode } : {}),
     ...(input.disableUserInput ? { disableUserInput: true } : {}),
     ...(input.imContext ? { imContext: true } : {}),

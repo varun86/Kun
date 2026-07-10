@@ -4,7 +4,9 @@ export const DESIGN_CANVAS_TOOL_NAME = 'design_canvas'
 export const DESIGN_CREATE_SCREEN_TOOL_NAME = 'design_create_screen'
 export const DESIGN_UPDATE_SHAPES_TOOL_NAME = 'design_update_shapes'
 export const DESIGN_ARRANGE_TOOL_NAME = 'design_arrange'
-export const DESIGN_SYSTEM_TEMPLATE_TOOL_NAME = 'design_system_template'
+export const DESIGN_SYSTEM_TOOL_NAME = 'design_system'
+/** @deprecated Source-compatible alias; the advertised tool is now `design_system`. */
+export const DESIGN_SYSTEM_TEMPLATE_TOOL_NAME = DESIGN_SYSTEM_TOOL_NAME
 export const DESIGN_VALIDATE_TOOL_NAME = 'design_validate'
 
 export const DESIGN_CANVAS_MUTATION_TOOL_NAMES = [
@@ -198,7 +200,7 @@ export function createDesignUpdateShapesTool(): LocalTool {
     name: DESIGN_UPDATE_SHAPES_TOOL_NAME,
     description: [
       'Apply validated shape operations to the active design canvas: add, update, delete, move, resize, style, token, component, and image changes.',
-      'Use this for whiteboard/vector edits. Use design_create_screen for new screen frames and design_system_template for style-kit boards. For any add/move/resize coordinates, inspect the current canvas snapshot first and preserve existing object bounds unless the user asked to replace them.'
+      'Use this for whiteboard/vector edits. Use design_create_screen for new screen frames and design_system for the project design-system file. For any add/move/resize coordinates, inspect the current canvas snapshot first and preserve existing object bounds unless the user asked to replace them.'
     ].join(' '),
     toolKind: 'tool_call',
     policy: 'auto',
@@ -277,8 +279,8 @@ export function createDesignSystemTemplateTool(): LocalTool {
   return LocalToolHost.defineTool({
     name: DESIGN_SYSTEM_TEMPLATE_TOOL_NAME,
     description: [
-      'Create, update, apply, or validate a reusable design-system style-kit board.',
-      'The renderer turns this into tokens, reusable component specimens, color/type/spacing samples, and a cohesive template board. Omit x/y unless the current canvas snapshot shows a precise empty slot; omitted coordinates are auto-placed away from existing canvas content.'
+      'Create, update, apply, or validate the structured project design system at .kun-design/design-system.json.',
+      'The Design canvas renders that file with its fixed built-in design-system board. This tool never draws an HTML, SVG, or freeform style-kit board.'
     ].join(' '),
     toolKind: 'tool_call',
     policy: 'auto',
@@ -304,8 +306,53 @@ export function createDesignSystemTemplateTool(): LocalTool {
           }
         },
         targetIds: { type: 'array', items: { type: 'string' } },
-        x: { type: 'number', description: CANVAS_SNAPSHOT_PLACEMENT_DESCRIPTION },
-        y: { type: 'number', description: CANVAS_SNAPSHOT_PLACEMENT_DESCRIPTION },
+        tokens: {
+          type: 'array',
+          description: 'Exact project tokens to upsert.',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string' },
+              kind: { type: 'string', enum: ['color', 'gradient', 'type', 'space', 'radius', 'shadow'] },
+              value: {}
+            },
+            required: ['name', 'kind', 'value'],
+            additionalProperties: false
+          }
+        },
+        captureComponents: {
+          type: 'array',
+          description: 'Capture existing canvas subtrees as project component definitions.',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string' },
+              fromId: { type: 'string' },
+              slots: { type: 'array', items: { type: 'object', additionalProperties: true } }
+            },
+            required: ['name', 'fromId'],
+            additionalProperties: false
+          }
+        },
+        variants: {
+          type: 'array',
+          description: 'Variant property overrides keyed by stable component-layer ids.',
+          items: {
+            type: 'object',
+            properties: {
+              component: { type: 'string' },
+              key: { type: 'string' },
+              selection: { type: 'object', additionalProperties: { type: 'string' } },
+              overrides: { type: 'object', additionalProperties: { type: 'object', additionalProperties: true } }
+            },
+            required: ['component', 'key', 'selection', 'overrides'],
+            additionalProperties: false
+          }
+        },
+        deleteTokenNames: { type: 'array', items: { type: 'string' } },
+        deleteComponentNames: { type: 'array', items: { type: 'string' } },
+        x: { type: 'number', description: 'Deprecated and ignored; the built-in board owns its placement.' },
+        y: { type: 'number', description: 'Deprecated and ignored; the built-in board owns its placement.' },
         width: { type: 'number' },
         height: { type: 'number' },
         dryRun: { type: 'boolean' }
@@ -322,8 +369,13 @@ export function createDesignSystemTemplateTool(): LocalTool {
           }
         ])
       }
-      return designToolOutput(DESIGN_SYSTEM_TEMPLATE_TOOL_NAME, 'design_system_template', [
-        {
+      const structuredOps = normalizeStructuredDesignSystemOps(args)
+      const hasFoundationInput = Boolean(
+        stringArg(args.name) || stringArg(args.seedColor) || args.mode || args.template || args.tone
+      )
+      const ops: Record<string, unknown>[] = []
+      if (hasFoundationInput || structuredOps.length === 0) {
+        ops.push({
           op: 'design-system-template',
           operation,
           ...(stringArg(args.name) ? { name: stringArg(args.name) } : {}),
@@ -337,13 +389,11 @@ export function createDesignSystemTemplateTool(): LocalTool {
             : {}),
           ...(Array.isArray(args.sections) ? { sections: args.sections.filter((v): v is string => typeof v === 'string') } : {}),
           ...(Array.isArray(args.targetIds) ? { targetIds: args.targetIds.filter((v): v is string => typeof v === 'string') } : {}),
-          ...(numberArg(args.x) !== undefined ? { x: numberArg(args.x) } : {}),
-          ...(numberArg(args.y) !== undefined ? { y: numberArg(args.y) } : {}),
-          ...(numberArg(args.width) !== undefined ? { width: numberArg(args.width) } : {}),
-          ...(numberArg(args.height) !== undefined ? { height: numberArg(args.height) } : {}),
           ...(args.dryRun === true ? { dryRun: true } : {})
-        }
-      ])
+        })
+      }
+      ops.push(...structuredOps)
+      return designToolOutput(DESIGN_SYSTEM_TEMPLATE_TOOL_NAME, 'design_system', ops)
     }
   })
 }
@@ -498,6 +548,48 @@ function normalizeScreenSpec(value: unknown): DesignScreenSpec | null {
   const name = typeof source.name === 'string' && source.name.trim() ? source.name.trim() : ''
   if (!name) return null
   return copyOptionalFields({ name }, source, ['brief', 'x', 'y', 'width', 'height', 'devicePreset']) as DesignScreenSpec
+}
+
+function normalizeStructuredDesignSystemOps(args: Record<string, unknown>): Record<string, unknown>[] {
+  const ops: Record<string, unknown>[] = []
+  if (Array.isArray(args.tokens)) {
+    for (const token of args.tokens) {
+      if (!isRecord(token)) continue
+      const name = stringArg(token.name)
+      const kind = oneOf(token.kind, ['color', 'gradient', 'type', 'space', 'radius', 'shadow'])
+      if (name && kind && Object.hasOwn(token, 'value')) ops.push({ op: 'define-token', name, kind, value: token.value })
+    }
+  }
+  if (Array.isArray(args.captureComponents)) {
+    for (const item of args.captureComponents) {
+      if (!isRecord(item)) continue
+      const name = stringArg(item.name)
+      const fromId = stringArg(item.fromId)
+      if (!name || !fromId) continue
+      ops.push({
+        op: 'define-component',
+        name,
+        fromId,
+        slots: Array.isArray(item.slots) ? item.slots.filter(isRecord) : []
+      })
+    }
+  }
+  if (Array.isArray(args.variants)) {
+    for (const item of args.variants) {
+      if (!isRecord(item)) continue
+      const name = stringArg(item.component)
+      const key = stringArg(item.key)
+      if (!name || !key || !isRecord(item.selection) || !isRecord(item.overrides)) continue
+      ops.push({ op: 'set-component-variant', name, key, selection: item.selection, overrides: item.overrides })
+    }
+  }
+  if (Array.isArray(args.deleteTokenNames)) {
+    for (const name of args.deleteTokenNames) if (stringArg(name)) ops.push({ op: 'delete-token', name: stringArg(name) })
+  }
+  if (Array.isArray(args.deleteComponentNames)) {
+    for (const name of args.deleteComponentNames) if (stringArg(name)) ops.push({ op: 'delete-component', name: stringArg(name) })
+  }
+  return ops
 }
 
 function normalizeArrangeOp(args: Record<string, unknown>):

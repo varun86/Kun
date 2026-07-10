@@ -51,6 +51,8 @@ import {
   resolveHtmlFrameOverlayInteractionState
 } from './canvas-viewport/helpers'
 import { useCanvasViewportDocumentSync } from './canvas-viewport/use-canvas-viewport-document-sync'
+import { useProjectDesignSystemSync } from '../../../design/canvas/use-project-design-system-sync'
+import { DesignSystemBoardOverlay } from './DesignSystemBoardOverlay'
 
 export {
   resolveCanvasDesignSystemBaseDir,
@@ -181,6 +183,7 @@ export function CanvasViewport({
   const minimapEnabled = shouldRenderCanvasMinimap(surface)
   const htmlFrameSyncEnabled = shouldSyncCanvasHtmlFrames(surface, syncHtmlScreens)
   const resolvedDesignSystemBaseDir = resolveCanvasDesignSystemBaseDir(baseDir, designSystemBaseDir)
+  useProjectDesignSystemSync(workspaceRoot, surface === 'design')
   const uiScale = useCanvasUiScale()
   const tool = useMemo(() => createCanvasTool(activeTool, surface), [activeTool, surface])
   const middlePanTool = useMemo(() => createHandTool(), [])
@@ -202,7 +205,8 @@ export function CanvasViewport({
     documentKey,
     htmlFrameSyncEnabled,
     designArtifacts,
-    designTarget
+    designTarget,
+    designSystemPersistenceEnabled: surface === 'code'
   })
   const selectedHtmlArtifactId = useMemo(() => {
     for (const id of selectedIds) {
@@ -487,6 +491,10 @@ export function CanvasViewport({
               onWheel={onWheel}
             >
               {gridVisible && <CanvasGrid zoom={zoom} />}
+
+              {surface === 'design' ? (
+                <DesignSystemBoardOverlay workspaceRoot={workspaceRoot} document={document} viewBox={vbox} />
+              ) : null}
 
               <g id="shape-layer">
                 {root.children.map((childId) => {

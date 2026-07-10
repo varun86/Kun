@@ -307,6 +307,7 @@ export const ShapeOpSchema = z.discriminatedUnion('op', [
     /** Shape depends on `kind`; validated per-kind in the executor. */
     value: z.unknown()
   }),
+  z.object({ op: z.literal('delete-token'), name: z.string().min(1) }),
   z.object({
     op: z.literal('apply-token'),
     ids: z.array(z.string()).min(1),
@@ -327,9 +328,18 @@ export const ShapeOpSchema = z.discriminatedUnion('op', [
       )
       .default([])
   }),
+  z.object({ op: z.literal('delete-component'), name: z.string().min(1) }),
+  z.object({
+    op: z.literal('set-component-variant'),
+    name: z.string().min(1),
+    key: z.string().min(1),
+    selection: z.record(z.string(), z.string()),
+    overrides: z.record(z.string(), z.record(z.string(), z.unknown()))
+  }),
   z.object({
     op: z.literal('instantiate'),
     name: z.string().min(1),
+    variant: z.string().optional(),
     at: z.object({ x: z.number(), y: z.number() }).optional(),
     parentId: z.string().optional(),
     overrides: z.record(z.string(), z.unknown()).optional()
@@ -337,6 +347,7 @@ export const ShapeOpSchema = z.discriminatedUnion('op', [
   z.object({
     op: z.literal('instantiate-many'),
     name: z.string().min(1),
+    variant: z.string().optional(),
     data: z.array(z.record(z.string(), z.unknown())).min(1).max(100),
     layout: z
       .object({

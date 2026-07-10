@@ -13,7 +13,7 @@ import { resolveTokenPatch, type ComponentDef, type DesignToken, type TokenProp 
 import type { OpError } from "../shape-ops"
 import { normalizeDesignTarget, type DesignTarget } from "../../design-context"
 import { useDesignWorkspaceStore } from "../../design-workspace-store"
-import { cleanName, createTemplateBoard, finite, fontStack, positive } from './board-builders'
+import { cleanName, fontStack } from './board-builders'
 import { mix, normalizeHex, rotateHue } from './color-utils'
 
 export type DesignSystemTemplateOperation = 'create' | 'update' | 'apply'
@@ -101,26 +101,12 @@ export function applyDesignSystemTemplateOp(
     upsertTokens(darkFoundation.tokens, op.targetIds, affectedIds)
     upsertTokens(lightFoundation.tokens, op.targetIds, affectedIds)
     registerTemplateComponents(defaultFoundation)
-    if (normalizedOp.operation !== 'apply') {
-      const width = positive(normalizedOp.width) ?? 1580
-      const x = finite(normalizedOp.x)
-      createTemplateBoard({ ...normalizedOp, mode: 'dark', width, ...(x === undefined ? {} : { x }) }, darkFoundation, affectedIds, errors)
-      createTemplateBoard(
-        { ...normalizedOp, mode: 'light', width, ...(x === undefined ? {} : { x: x + width + 80 }) },
-        lightFoundation,
-        affectedIds,
-        errors
-      )
-    }
     return
   }
 
   const foundation = buildFoundation(normalizedOp)
   upsertTokens(foundation.tokens, op.targetIds, affectedIds)
   registerTemplateComponents(foundation)
-  if (normalizedOp.operation !== 'apply') {
-    createTemplateBoard(normalizedOp, foundation, affectedIds, errors)
-  }
 }
 
 export function buildFoundation(

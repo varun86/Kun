@@ -148,6 +148,84 @@ describe('createAgentSdkRuntime handlesProvider', () => {
 })
 
 describe('createAgentSdkRuntime turn context', () => {
+  test('exposes Design tools and the Design intent policy only for Design canvas turns', async () => {
+    const listedContexts: Array<{ guiDesignCanvas?: boolean }> = []
+    const executedContexts: Array<{ guiDesignCanvas?: boolean }> = []
+    const designTurn = {
+      id: 'tn',
+      prompt: '做一个登录页',
+      guiDesignCanvas: true,
+      guiDesignMode: true
+    } as ThreadRecord['turns'][number]
+    const runtime = createAgentSdkRuntime({
+      registry: {
+        listTools: (context: { guiDesignCanvas?: boolean }) => {
+          listedContexts.push(context)
+          return context.guiDesignCanvas
+            ? [{ name: 'design_create_screen', description: 'Create screens', inputSchema: {} }]
+            : []
+        },
+        resolveTool: (_name: string, context: { guiDesignCanvas?: boolean }) => ({
+          tool: {
+            execute: async () => {
+              executedContexts.push(context)
+              return { output: { ok: true } }
+            }
+          }
+        })
+      } as never,
+      turns: { updateTurnMetadata: async () => undefined } as never,
+      sessionStore: {
+        loadItems: async () => [{
+          id: 'item_user',
+          turnId: 'tn',
+          threadId: 'th',
+          kind: 'user_message',
+          role: 'user',
+          status: 'completed',
+          text: '做一个登录页',
+          createdAt: '2026-07-10T00:00:00.000Z'
+        }]
+      } as never,
+      threadStore: {
+        get: async () => threadWith({
+          id: 'th',
+          providerId: 'claude-subscription',
+          turns: [designTurn]
+        })
+      } as never,
+      events: {} as never,
+      ids: { next: (prefix) => prefix },
+      prefix: { systemPrompt: '' },
+      providerConfigs: { 'claude-subscription': { kind: 'agent-sdk', apiKey: 'tok' } } as never,
+      agentSdkProviderIds: new Set(['claude-subscription']),
+      defaultApprovalPolicy: 'auto'
+    })
+    const deps = (runtime as unknown as {
+      deps: {
+        loadTurnContext(threadId: string, turnId: string): Promise<{
+          contextInstructions?: string[]
+          bridgeableTools: Array<{ name: string }>
+        } | null>
+        executeKunTool(
+          threadId: string,
+          turnId: string,
+          toolName: string,
+          args: Record<string, unknown>
+        ): Promise<unknown>
+      }
+    }).deps
+
+    const context = await deps.loadTurnContext('th', 'tn')
+    await deps.executeKunTool('th', 'tn', 'design_create_screen', { name: 'Login' })
+
+    expect(listedContexts).toEqual([expect.objectContaining({ guiDesignCanvas: true })])
+    expect(executedContexts).toEqual([expect.objectContaining({ guiDesignCanvas: true })])
+    expect(context?.bridgeableTools.map((tool) => tool.name)).toContain('design_create_screen')
+    expect(context?.contextInstructions?.join('\n')).toContain('SINGLE SCREEN')
+    expect(context?.contextInstructions?.join('\n')).toContain('COMPLETE MULTI-SCREEN EXPERIENCE')
+  })
+
   test('uses the thread approval policy to gate SDK built-in tools', async () => {
     const events: Array<{ kind: string; approvalPolicy?: string }> = []
     const runtime = createAgentSdkRuntime({

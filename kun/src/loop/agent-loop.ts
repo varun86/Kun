@@ -27,6 +27,7 @@ import type { IdGenerator } from '../ports/id-generator.js'
 import type { ImmutablePrefix } from '../cache/immutable-prefix.js'
 import type { CacheRequestSignature } from '../cache/cache-diagnostics.js'
 import { ContextCompactor } from './context-compactor.js'
+import { DESIGN_MODE_INSTRUCTION } from './design-mode.js'
 import {
   effectiveHistoryAfterLatestCompaction,
   insertCompactionIntoVisibleHistory,
@@ -1306,6 +1307,10 @@ export class AgentLoop {
       contextInstructionCount: contextInstructions.length
     })
     const tokenEconomy = normalizeTokenEconomyConfig(this.opts.tokenEconomy)
+    const modeInstruction = [
+      ...(planTurnActive ? [PLAN_MODE_INSTRUCTION] : []),
+      ...(turn?.guiDesignMode ? [DESIGN_MODE_INSTRUCTION] : [])
+    ].join('\n\n')
     const baseRequest: ModelRequest = {
       threadId,
       turnId,
@@ -1320,7 +1325,7 @@ export class AgentLoop {
       systemPrompt: thread?.systemPrompt?.trim()
         ? `${this.opts.prefix.systemPrompt}\n\n${thread.systemPrompt.trim()}`
         : this.opts.prefix.systemPrompt,
-      ...(planTurnActive ? { modeInstruction: PLAN_MODE_INSTRUCTION } : {}),
+      ...(modeInstruction ? { modeInstruction } : {}),
       ...(contextInstructions.length ? { contextInstructions } : {}),
       prefix: this.opts.prefix.fewShots,
       history: capToolResultImages(forwardHistory, MAX_FORWARDED_TOOL_IMAGES),

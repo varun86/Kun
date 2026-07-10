@@ -658,6 +658,7 @@ export function createThreadActions(
             ...(reasoningEffort ? { reasoningEffort } : {}),
             ...(overrides?.guiPlan ? { guiPlan: overrides.guiPlan } : {}),
             ...(overrides?.guiDesignCanvas ? { guiDesignCanvas: true } : {}),
+            ...(overrides?.guiDesignMode ? { guiDesignMode: true } : {}),
             ...(attachmentIds?.length ? { attachmentIds } : {}),
             ...(attachments?.length ? { attachments } : {}),
             ...(fileReferences?.length ? { fileReferences } : {})
@@ -911,6 +912,7 @@ export function createThreadActions(
         ...(runtimeDisplayText ? { displayText: runtimeDisplayText } : {}),
         ...((queued?.guiPlan ?? overrides?.guiPlan) ? { guiPlan: queued?.guiPlan ?? overrides?.guiPlan } : {}),
         ...((queued?.guiDesignCanvas ?? overrides?.guiDesignCanvas) ? { guiDesignCanvas: true } : {}),
+        ...((queued?.guiDesignMode ?? overrides?.guiDesignMode) ? { guiDesignMode: true } : {}),
         ...(attachmentIds.length ? { attachmentIds } : {}),
         ...(workspaceCheckpointId ? { workspaceCheckpointId } : {}),
         ...(fileReferences.length ? { fileReferences } : {})

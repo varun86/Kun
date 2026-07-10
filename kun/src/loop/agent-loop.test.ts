@@ -105,7 +105,86 @@ class RepeatingToolModel implements ModelClient {
   }
 }
 
+class CapturingCompleteModel implements ModelClient {
+  readonly provider = 'test'
+  readonly model = 'capturing-complete-model'
+  readonly requests: ModelRequest[] = []
+
+  async *stream(request: ModelRequest): AsyncIterable<ModelStreamChunk> {
+    this.requests.push(request)
+    yield { kind: 'assistant_text_delta', text: 'Done.' }
+    yield { kind: 'completed', stopReason: 'stop' }
+  }
+}
+
 describe('AgentLoop interruption', () => {
+  it('injects the Design intent policy as a system mode instruction on canvas turns', async () => {
+    const sessionStore = new InMemorySessionStore()
+    const threadStore = new InMemoryThreadStore()
+    const eventBus = new InMemoryEventBus()
+    const inflight = new InflightTracker()
+    const steering = new SteeringQueue()
+    const ids = new SequentialIdGenerator()
+    const nowIso = () => '2026-07-10T00:00:00.000Z'
+    const events = new RuntimeEventRecorder({
+      eventBus,
+      sessionStore,
+      allocateSeq: (threadId) => eventBus.allocateSeq(threadId),
+      nowIso
+    })
+    const model = new CapturingCompleteModel()
+    const turns = new TurnService({
+      threadStore,
+      sessionStore,
+      events,
+      inflight,
+      steering,
+      compactor: new ContextCompactor(),
+      ids,
+      nowIso
+    })
+    const loop = new AgentLoop({
+      threadStore,
+      sessionStore,
+      approvalGate: new AllowApprovalGate(),
+      userInputGate: new NoopUserInputGate(),
+      model,
+      toolHost: new LocalToolHost({ tools: [] }),
+      usage: new UsageService(),
+      events,
+      turns,
+      inflight,
+      steering,
+      compactor: new ContextCompactor(),
+      prefix: createImmutablePrefix({ systemPrompt: 'test system prompt' }),
+      ids,
+      nowIso
+    })
+    const threadId = 'thr_design_mode'
+    await threadStore.upsert(createThreadRecord({
+      id: threadId,
+      title: 'Design mode test',
+      workspace: '/tmp/workspace',
+      model: model.model
+    }))
+    const started = await turns.startTurn({
+      threadId,
+      request: {
+        prompt: '做一套完整 CRM',
+        model: model.model,
+        guiDesignCanvas: true,
+        guiDesignMode: true
+      }
+    })
+
+    await expect(loop.runTurn(threadId, started.turnId)).resolves.toBe('completed')
+
+    expect(model.requests).toHaveLength(1)
+    expect(model.requests[0]?.modeInstruction).toContain('SINGLE SCREEN')
+    expect(model.requests[0]?.modeInstruction).toContain('COMPLETE MULTI-SCREEN EXPERIENCE')
+    expect(model.requests[0]?.modeInstruction).toContain('MODIFY EXISTING DESIGN')
+  })
+
   it('aborts an in-flight model stream when the turn service interrupts the turn', async () => {
     const sessionStore = new InMemorySessionStore()
     const threadStore = new InMemoryThreadStore()

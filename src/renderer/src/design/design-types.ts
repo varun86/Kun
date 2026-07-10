@@ -101,7 +101,7 @@ export type DesignArtifact = {
   implementedAt?: string
   /** Code thread that implemented it (provenance). */
   implementedThreadId?: string
-  /** Hash of the DESIGN_SYSTEM.md published at implement time (code-drift baseline). */
+  /** Hash of design-system.json at implement time (code-drift baseline). */
   implementedDesignSystemHash?: string
   /**
    * Foundation role in a Stitch-style run: the shared visual style guide or the

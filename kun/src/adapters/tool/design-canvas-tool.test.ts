@@ -171,13 +171,14 @@ describe('dedicated design tools', () => {
     })
   })
 
-  it('queues a high-level design-system-template op', async () => {
+  it('queues a structured project design-system operation without board placement', async () => {
     const tool = createDesignSystemTemplateTool()
     expect(tool.name).toBe(DESIGN_SYSTEM_TEMPLATE_TOOL_NAME)
     expect(JSON.stringify(tool.inputSchema)).toContain('Web -> saas/web components')
     expect(JSON.stringify(tool.inputSchema)).toContain('App -> mobile/app components')
-    expect(JSON.stringify(tool.inputSchema)).toContain('inspect the current canvas snapshot')
-    expect(tool.description).toContain('auto-placed away from existing canvas content')
+    expect(tool.name).toBe('design_system')
+    expect(tool.description).toContain('.kun-design/design-system.json')
+    expect(tool.description).toContain('never draws an HTML, SVG, or freeform style-kit board')
     const result = await tool.execute(
       { name: 'IKUN World', seedColor: '#D4AF37', mode: 'dark', template: 'game' },
       context()
@@ -196,6 +197,8 @@ describe('dedicated design tools', () => {
         }
       ]
     })
+    expect(JSON.stringify(result.output)).not.toContain('"x"')
+    expect(JSON.stringify(result.output)).not.toContain('"y"')
   })
 
   it('preserves target ids for design-system validation tools', async () => {
@@ -221,5 +224,35 @@ describe('dedicated design tools', () => {
       tool: DESIGN_VALIDATE_TOOL_NAME,
       ops: [{ op: 'lint-design-system', targetIds: ['card-1', 'card-label'] }]
     })
+  })
+
+  it('normalizes structured tokens, captured components, variants, and deletions', async () => {
+    const tool = createDesignSystemTemplateTool()
+    const result = await tool.execute({
+      operation: 'update',
+      tokens: [{ name: 'brand/primary', kind: 'color', value: '#2563eb' }],
+      captureComponents: [{ name: 'Button', fromId: 'shape_button', slots: [{ path: 'label', kind: 'text' }] }],
+      variants: [{
+        component: 'Button',
+        key: 'size=small',
+        selection: { size: 'small' },
+        overrides: { shape_button: { width: 96 } }
+      }],
+      deleteTokenNames: ['legacy/color'],
+      deleteComponentNames: ['LegacyCard']
+    }, context())
+
+    expect(result.output).toMatchObject({
+      ok: true,
+      tool: 'design_system',
+      ops: [
+        { op: 'define-token', name: 'brand/primary', kind: 'color', value: '#2563eb' },
+        { op: 'define-component', name: 'Button', fromId: 'shape_button' },
+        { op: 'set-component-variant', name: 'Button', key: 'size=small' },
+        { op: 'delete-token', name: 'legacy/color' },
+        { op: 'delete-component', name: 'LegacyCard' }
+      ]
+    })
+    expect(JSON.stringify(result.output)).not.toContain('design-system-template')
   })
 })

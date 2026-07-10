@@ -41,6 +41,7 @@ type UseCanvasViewportDocumentSyncArgs = {
   htmlFrameSyncEnabled: boolean
   designArtifacts: DesignArtifact[]
   designTarget?: DesignTarget
+  designSystemPersistenceEnabled?: boolean
 }
 
 function focusBoundsToFitLater(bounds: Rect | null, cancelled: () => boolean): number {
@@ -76,7 +77,8 @@ export function useCanvasViewportDocumentSync({
   documentKey,
   htmlFrameSyncEnabled,
   designArtifacts,
-  designTarget
+  designTarget,
+  designSystemPersistenceEnabled = true
 }: UseCanvasViewportDocumentSyncArgs): boolean {
   const [docLoaded, setDocLoaded] = useState(false)
 
@@ -135,10 +137,12 @@ export function useCanvasViewportDocumentSync({
       setDocLoaded(true)
     })
 
-    void loadDesignSystem(workspaceRoot, resolvedDesignSystemBaseDir).then((system) => {
-      if (cancelled) return
-      useDesignSystemStore.getState().loadSystem(system ?? createEmptyDesignSystem())
-    })
+    if (designSystemPersistenceEnabled) {
+      void loadDesignSystem(workspaceRoot, resolvedDesignSystemBaseDir).then((system) => {
+        if (cancelled) return
+        useDesignSystemStore.getState().loadSystem(system ?? createEmptyDesignSystem())
+      })
+    }
 
     const unsubscribe = useCanvasShapeStore.subscribe((state, prev) => {
       if (cancelled) return
@@ -165,7 +169,7 @@ export function useCanvasViewportDocumentSync({
     })
 
     const unsubscribeDesignSystem = useDesignSystemStore.subscribe((state, prev) => {
-      if (cancelled) return
+      if (cancelled || !designSystemPersistenceEnabled) return
       if (state.system === prev.system) return
       persistDesignSystem(workspaceRoot, state.system, resolvedDesignSystemBaseDir)
     })
@@ -177,7 +181,7 @@ export function useCanvasViewportDocumentSync({
       unsubscribe()
       unsubscribeDesignSystem()
     }
-  }, [workspaceRoot, artifactId, baseDir, documentKey, htmlFrameSyncEnabled, resolvedDesignSystemBaseDir, viewportStorageKey])
+  }, [workspaceRoot, artifactId, baseDir, designSystemPersistenceEnabled, documentKey, htmlFrameSyncEnabled, resolvedDesignSystemBaseDir, viewportStorageKey])
 
   const htmlArtifactSyncKey = useMemo(() => {
     if (!htmlFrameSyncEnabled) return ''

@@ -209,6 +209,8 @@ export type CanvasShape = {
    */
   componentId?: string
   componentVersion?: number
+  /** Named component variant applied to this instance root. */
+  componentVariant?: string
   overrides?: Record<string, unknown>
   textContent?: string
   fontSize?: number

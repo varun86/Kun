@@ -14,6 +14,10 @@ import {
 } from './design-document-persistence'
 import { defaultPreviewNodeSizeForDesignTarget, hashDesignSystem, normalizeDesignTarget } from './design-context'
 import {
+  PROJECT_DESIGN_SYSTEM_PATH,
+  parseProjectDesignSystem
+} from './canvas/project-design-system'
+import {
   createDesignDocumentId,
   defaultDesignArtifactNode
 } from './design-types'
@@ -583,9 +587,14 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
         return
       }
       const res = await window.kunGui
-        .readWorkspaceFile({ path: '.kun-design/DESIGN_SYSTEM.md', workspaceRoot })
+        .readWorkspaceFile({ path: PROJECT_DESIGN_SYSTEM_PATH, workspaceRoot })
         .catch(() => null)
-      set({ designSystemHash: res && res.ok ? hashDesignSystem(res.content) : '' })
+      set({
+        designSystemHash:
+          res && res.ok && parseProjectDesignSystem(res.content).ok
+            ? hashDesignSystem(res.content)
+            : ''
+      })
     },
 
     resetWorkspace: () =>

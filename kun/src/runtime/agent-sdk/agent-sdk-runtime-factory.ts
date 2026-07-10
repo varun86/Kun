@@ -30,6 +30,7 @@ import {
   memoryInstructions,
   isStalePlanContext
 } from '../../loop/agent-loop.js'
+import { DESIGN_MODE_INSTRUCTION } from '../../loop/design-mode.js'
 import type { GuiPlanContext } from '../../ports/tool-host.js'
 import type { ThreadRecord } from '../../contracts/threads.js'
 import type {
@@ -274,6 +275,7 @@ export function createAgentSdkRuntime(deps: AgentSdkRuntimeFactoryDeps): AgentSd
     opts?: {
       planMode?: boolean
       guiPlan?: GuiPlanContext
+      guiDesignCanvas?: boolean
       sandboxMode?: SandboxMode
       approvalPolicy?: ApprovalPolicy
       signal?: AbortSignal
@@ -291,6 +293,7 @@ export function createAgentSdkRuntime(deps: AgentSdkRuntimeFactoryDeps): AgentSd
     // (executeKunTool) on plan turns — both are gated on it.
     ...(opts?.planMode ? { threadMode: 'plan' as const } : {}),
     ...(opts?.guiPlan ? { guiPlan: opts.guiPlan } : {}),
+    ...(opts?.guiDesignCanvas ? { guiDesignCanvas: true } : {}),
     // Wire interactive input to kun's GUI panel (advertises `user_input`).
     ...(opts?.awaitUserInput ? { awaitUserInput: opts.awaitUserInput } : {}),
     // Execution supplies the real GUI approval callback; listing contexts stay
@@ -352,6 +355,7 @@ export function createAgentSdkRuntime(deps: AgentSdkRuntimeFactoryDeps): AgentSd
       const plan = resolveTurnPlanContext(thread, turnId)
       const ctx = toolContext(threadId, turnId, thread.workspace, {
         ...plan,
+        ...(turn?.guiDesignCanvas ? { guiDesignCanvas: true } : {}),
         sandboxMode: thread.sandboxMode,
         awaitUserInput: makeAwaitUserInput(threadId, turnId, new AbortController().signal)
       })
@@ -404,6 +408,7 @@ export function createAgentSdkRuntime(deps: AgentSdkRuntimeFactoryDeps): AgentSd
 
       const contextInstructions = [
         ...(planMode ? [PLAN_MODE_INSTRUCTION] : []),
+        ...(turn?.guiDesignMode ? [DESIGN_MODE_INSTRUCTION] : []),
         ...(instructionResolution?.instruction ? [instructionResolution.instruction] : []),
         ...(goalInstruction ? [goalInstruction] : []),
         ...(todoInstruction ? [todoInstruction] : []),
@@ -433,6 +438,7 @@ export function createAgentSdkRuntime(deps: AgentSdkRuntimeFactoryDeps): AgentSd
 
     async executeKunTool(threadId, turnId, toolName, args, signal): Promise<KunToolResult> {
       const thread = await deps.threadStore.get(threadId)
+      const turn = thread?.turns.find((candidate) => candidate.id === turnId)
       // Re-resolve plan context so create_plan can write to its reserved path.
       const plan = thread ? resolveTurnPlanContext(thread, turnId) : undefined
       const approvalPolicy = thread?.approvalPolicy ?? deps.defaultApprovalPolicy
@@ -441,6 +447,7 @@ export function createAgentSdkRuntime(deps: AgentSdkRuntimeFactoryDeps): AgentSd
       // Real per-call signal so an interactive user_input cancels on turn abort.
       const ctx = toolContext(threadId, turnId, thread?.workspace ?? process.cwd(), {
         ...(plan ?? {}),
+        ...(turn?.guiDesignCanvas ? { guiDesignCanvas: true } : {}),
         ...(sandboxMode ? { sandboxMode } : {}),
         approvalPolicy,
         signal: toolSignal,

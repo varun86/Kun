@@ -90,7 +90,7 @@ ${formatPersistedDesignContext(options.designContext)}
 ## Visual Direction
 
 - Establish the page layout, hierarchy, color system, typography, spacing, and responsive behavior for this screen.
-- Keep visual decisions consistent with \`.kun-design/DESIGN_SYSTEM.md\` when that shared file exists.
+- Keep visual decisions consistent with \`.kun-design/design-system.json\` when that structured project file exists.
 
 ## Interaction Notes
 

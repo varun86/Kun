@@ -6,6 +6,7 @@ export const DESIGN_CANVAS_TOOL_NAMES = new Set([
   'design_update_shapes',
   'design_arrange',
   'design_system_template',
+  'design_system',
   'design_validate'
 ])
 

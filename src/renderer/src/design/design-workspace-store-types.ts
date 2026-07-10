@@ -63,7 +63,7 @@ export type DesignWorkspaceState = {
   publishDesignSystem: boolean
   settingsLoaded: boolean
   fileError: string | null
-  /** Hash of the current published .kun-design/DESIGN_SYSTEM.md ('' = none). */
+  /** Hash of the current valid .kun-design/design-system.json ('' = none). */
   designSystemHash: string
   /** When true, the design page shows the in-page code-implement assistant. */
   implementOpen: boolean
@@ -153,7 +153,7 @@ export type DesignWorkspaceState = {
   loadDesignSettings: () => Promise<void>
   /** Rebuild the artifact list from `.kun-design/` on disk (durable list). */
   rehydrateArtifacts: () => Promise<void>
-  /** Re-read DESIGN_SYSTEM.md and refresh designSystemHash (code-drift detection). */
+  /** Re-read design-system.json and refresh designSystemHash (code-drift detection). */
   refreshDesignSystemHash: () => Promise<void>
   resetWorkspace: () => void
 }

@@ -137,6 +137,7 @@ describe('submitDesignTurn', () => {
       providerId: 'deepseek',
       reasoningEffort: 'medium',
       guiDesignCanvas: true,
+      guiDesignMode: true,
       attachmentIds: [attachment.id],
       attachments: [attachment]
     })

@@ -7,6 +7,7 @@ import {
   prepareImplementDesignTurn
 } from './design-code-roundtrip'
 import type { DesignArtifact } from './design-types'
+import { createProjectDesignSystem, serializeProjectDesignSystem } from './canvas/project-design-system'
 
 const now = '2026-07-02T00:00:00.000Z'
 
@@ -31,29 +32,33 @@ const designState = {
 }
 
 describe('design code roundtrip', () => {
-  it('prepares a design-to-code implementation turn and publishes the design system', async () => {
-    const writeWorkspaceFile = vi.fn(async () => ({
+  it('prepares a design-to-code implementation turn from the structured design system', async () => {
+    const content = serializeProjectDesignSystem(createProjectDesignSystem('Product UI'))
+    const readWorkspaceFile = vi.fn(async () => ({
       ok: true as const,
-      path: '.kun-design/DESIGN_SYSTEM.md',
-      savedAt: now
+      path: '/workspace/.kun-design/design-system.json',
+      content,
+      size: content.length,
+      truncated: false,
+      readAt: now
     }))
 
     const result = await prepareImplementDesignTurn({
       artifact: artifact('html'),
       designState,
       workspaceRoot: '/workspace',
-      api: { writeWorkspaceFile }
+      api: { readWorkspaceFile }
     })
 
     expect(result.ok).toBe(true)
     if (!result.ok) return
-    expect(writeWorkspaceFile).toHaveBeenCalledWith(expect.objectContaining({
-      path: '.kun-design/DESIGN_SYSTEM.md',
+    expect(readWorkspaceFile).toHaveBeenCalledWith(expect.objectContaining({
+      path: '.kun-design/design-system.json',
       workspaceRoot: '/workspace'
     }))
     expect(result.designSystemHash).toBeTruthy()
     expect(result.prompt).toContain('Design source (a standalone HTML mockup): .kun-design/doc/html_1/v1.html')
-    expect(result.prompt).toContain('Project design system: .kun-design/DESIGN_SYSTEM.md')
+    expect(result.prompt).toContain('Project design system: .kun-design/design-system.json')
     expect(result.prompt).toContain('Target stack: React + Tailwind')
     expect(result.prompt).toContain('Read the design notes `.kun-design/doc/html_1/DESIGN.md`')
   })
@@ -63,13 +68,13 @@ describe('design code roundtrip', () => {
       artifact: artifact('html'),
       designState,
       workspaceRoot: '/workspace',
-      api: { writeWorkspaceFile: vi.fn(async () => ({ ok: false as const, message: 'nope' })) }
+      api: { readWorkspaceFile: vi.fn(async () => ({ ok: false as const, message: 'nope' })) }
     })
 
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.designSystemHash).toBeUndefined()
-    expect(result.prompt).not.toContain('Project design system: .kun-design/DESIGN_SYSTEM.md')
+    expect(result.prompt).not.toContain('Project design system: .kun-design/design-system.json')
   })
 
   it('rejects non-html artifacts for implementation', async () => {
@@ -101,10 +106,13 @@ describe('design code roundtrip', () => {
       displayText: 'Implement Home',
       getActiveThreadId: () => 'thread_1',
       api: {
-        writeWorkspaceFile: vi.fn(async () => ({
+        readWorkspaceFile: vi.fn(async () => ({
           ok: true as const,
-          path: '.kun-design/DESIGN_SYSTEM.md',
-          savedAt: now
+          path: '/workspace/.kun-design/design-system.json',
+          content: serializeProjectDesignSystem(createProjectDesignSystem('Product UI')),
+          size: 200,
+          truncated: false,
+          readAt: now
         }))
       }
     })

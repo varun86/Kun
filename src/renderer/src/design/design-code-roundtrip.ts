@@ -1,18 +1,16 @@
-import type { WorkspaceFileWritePayload, WorkspaceFileWriteResult } from '@shared/workspace-file'
+import type { WorkspaceFileReadResult, WorkspaceFileTarget } from '@shared/workspace-file'
 import type { SendMessageOverrides } from '../store/chat-store-types'
 import { canImplementDesignArtifact } from './design-artifact-actions'
 import type { DesignArtifact } from './design-types'
-import {
-  formatDesignSystemMarkdown,
-  hashDesignSystem
-} from './design-context'
+import { hashDesignSystem } from './design-context'
+import { PROJECT_DESIGN_SYSTEM_PATH, parseProjectDesignSystem } from './canvas/project-design-system'
 import type { DesignWorkspaceState } from './design-workspace-store-types'
 import { buildImplementDesignPrompt } from './design-implement-prompt'
 import { createDesignArtifactId } from './design-types'
 import { buildDesignFromCodePrompt } from './design-turn-prompt'
 
 export type DesignCodeRoundtripWriteApi = {
-  writeWorkspaceFile?: (payload: WorkspaceFileWritePayload) => Promise<WorkspaceFileWriteResult>
+  readWorkspaceFile?: (payload: WorkspaceFileTarget) => Promise<WorkspaceFileReadResult>
 }
 
 export type DesignCodeRoundtripCreateThread = (options: { workspaceRoot: string }) => Promise<void>
@@ -125,16 +123,14 @@ async function publishDesignSystemForImplementation(options: {
 }): Promise<{ relativePath?: string; hash?: string }> {
   if (!options.designState.publishDesignSystem) return {}
   const api = currentWriteApi(options.api)
-  if (typeof api?.writeWorkspaceFile !== 'function') return {}
-  const relativePath = '.kun-design/DESIGN_SYSTEM.md'
-  const content = formatDesignSystemMarkdown(options.designState.designContext)
+  if (typeof api?.readWorkspaceFile !== 'function') return {}
   try {
-    const result = await api.writeWorkspaceFile({
-      path: relativePath,
-      workspaceRoot: options.workspaceRoot,
-      content
+    const result = await api.readWorkspaceFile({
+      path: PROJECT_DESIGN_SYSTEM_PATH,
+      workspaceRoot: options.workspaceRoot
     })
-    return result.ok ? { relativePath, hash: hashDesignSystem(content) } : {}
+    if (!result.ok || !parseProjectDesignSystem(result.content).ok) return {}
+    return { relativePath: PROJECT_DESIGN_SYSTEM_PATH, hash: hashDesignSystem(result.content) }
   } catch {
     return {}
   }

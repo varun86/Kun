@@ -96,6 +96,8 @@ export const TurnSchema = z.object({
    * returned ops to its canvas store.
    */
   guiDesignCanvas: z.boolean().optional(),
+  /** True only for product Design-mode turns; Code canvas turns leave it unset. */
+  guiDesignMode: z.boolean().optional(),
   /**
    * Optional per-turn mode override. When set, it takes precedence over
    * the thread mode for this turn (e.g. a Plan-mode turn inside an
@@ -155,6 +157,8 @@ export const StartTurnRequest = z.object({
    * tool for this turn only.
    */
   guiDesignCanvas: z.boolean().optional(),
+  /** True only for product Design-mode turns; Code canvas turns leave it unset. */
+  guiDesignMode: z.boolean().optional(),
   /**
    * True when the caller cannot relay structured input prompts to a
    * user (IM bridges such as WeChat/Feishu, headless runs). The turn

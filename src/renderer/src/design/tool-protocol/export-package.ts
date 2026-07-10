@@ -6,7 +6,7 @@ import type { DesignToolState } from './tool-state'
 
 export type DesignExportResourceKind =
   | 'project-design-md'
-  | 'design-system-md'
+  | 'design-system-json'
   | 'canvas'
   | 'html'
   | 'screen-design-md'
@@ -26,7 +26,7 @@ export type DesignExportPackageOptions = {
   title: string
   brief?: string
   updatedAt: string
-  designSystemMdPath: string
+  designSystemPath: string
   projectBriefPath?: string
 }
 
@@ -94,12 +94,12 @@ export function buildDesignExportPackage(
     designSystem: state.designSystem,
     artifacts: state.artifacts,
     updatedAt: options.updatedAt,
-    designSystemMdPath: options.designSystemMdPath,
+    designSystemMdPath: options.designSystemPath,
     projectBriefPath: options.projectBriefPath
   })
   const resources: DesignExportResource[] = [
     { kind: 'project-design-md', path: STITCH_DESIGN_MD_PATH, title: options.title },
-    { kind: 'design-system-md', path: options.designSystemMdPath, title: 'DESIGN_SYSTEM.md' },
+    { kind: 'design-system-json', path: options.designSystemPath, title: 'Design system' },
     { kind: 'graph-json', path: '.kun-design/design-graph.json', title: 'Design Graph' },
     ...artifactResources(state)
   ]
@@ -112,7 +112,7 @@ export function buildDesignExportPackage(
     updatedAt: options.updatedAt,
     paths: {
       designMd: STITCH_DESIGN_MD_PATH,
-      designSystemMd: options.designSystemMdPath,
+      designSystem: options.designSystemPath,
       ...(options.projectBriefPath ? { projectBrief: options.projectBriefPath } : {})
     },
     counts: packageCounts(state),

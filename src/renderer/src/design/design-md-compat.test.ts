@@ -79,7 +79,7 @@ describe('design-md-compat', () => {
         tone: ['专业']
       },
       designSystem: system,
-      designSystemMdPath: '.kun-design/DESIGN_SYSTEM.md',
+      designSystemMdPath: '.kun-design/design-system.json',
       projectBriefPath: '.kun-design/doc/design.md',
       artifacts: [
         artifact('home', 'Home', {

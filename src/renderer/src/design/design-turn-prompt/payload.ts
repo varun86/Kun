@@ -20,7 +20,6 @@ import type { DesignWorkspaceState } from '../design-workspace-store-types'
 import type { DerivedTokens } from '../design-token-extract'
 import { buildHtmlSiblingManifest } from '../design-pages'
 import { mergeDesignContextWithTokens } from '../design-context'
-import { buildDesignModeSurfaceManifest } from '../design-mode/design-mode-surface'
 import { buildDesignTurnPrompt } from './entry'
 import type { DesignFrameContext, DesignTurnTarget, ScreenManifestEntry } from './shared'
 import { buildPrototypeHref } from './shared'
@@ -166,16 +165,6 @@ export async function buildDesignTurnPromptPayload(
     targets: options.visibleTargets,
     canvasArtifact: options.boardArtifact
   })
-  const activeDocument =
-    options.promptState.documents.find((doc) => doc.id === options.promptState.activeDocumentId) ?? null
-  const designModeManifest = options.target === 'canvas'
-    ? buildDesignModeSurfaceManifest({
-        document: activeDocument,
-        canvasDocument: options.canvasDocument,
-        designSystem: options.designSystem,
-        artifacts: options.promptState.artifacts
-      })
-    : undefined
   const prompt = buildDesignTurnPrompt({
     target: options.target,
     mode: options.mode,
@@ -189,11 +178,11 @@ export async function buildDesignTurnPromptPayload(
     ...(options.htmlElementContext ? { htmlElementContext: options.htmlElementContext } : {}),
     ...(contextLocations.length > 0 ? { contextLocations } : {}),
     ...(options.canvasSnapshot ? { canvasSnapshot: options.canvasSnapshot } : {}),
+    canvasDesignSystem: options.designSystem,
     ...(options.htmlFrameContext ? { frameContext: options.htmlFrameContext } : {}),
     ...(options.previousOpErrors?.length ? { previousOpErrors: options.previousOpErrors } : {}),
     ...(derivedTokens ? { derivedTokens } : {}),
     ...(qualityFindings.length > 0 ? { qualityFindings } : {}),
-    ...(designModeManifest ? { designModeManifest } : {}),
     ...(htmlSiblingManifest.length > 0 ? { screenManifest: htmlSiblingManifest } : {}),
     ...(options.target === 'screen' && options.selectedFrame ? {
       screenName: options.selectedFrame.name,

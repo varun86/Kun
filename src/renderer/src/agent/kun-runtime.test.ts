@@ -362,7 +362,10 @@ describe('KunRuntimeProvider', () => {
     }))
     installDsGui({ runtimeRequest })
     const provider = new KunRuntimeProvider()
-    await provider.sendUserMessage('thr_1', 'design a screen', { guiDesignCanvas: true })
+    await provider.sendUserMessage('thr_1', 'design a screen', {
+      guiDesignCanvas: true,
+      guiDesignMode: true
+    })
     expect(runtimeRequest).toHaveBeenCalledWith(
       '/v1/threads/thr_1/turns',
       'POST',
@@ -370,7 +373,8 @@ describe('KunRuntimeProvider', () => {
         prompt: 'design a screen',
         approvalPolicy: 'auto',
         sandboxMode: 'danger-full-access',
-        guiDesignCanvas: true
+        guiDesignCanvas: true,
+        guiDesignMode: true
       })
     )
   })

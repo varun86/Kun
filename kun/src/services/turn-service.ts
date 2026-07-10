@@ -93,6 +93,7 @@ export class TurnService {
         attachmentIds: input.request.attachmentIds ?? [],
         guiPlan: input.request.guiPlan,
         guiDesignCanvas: input.request.guiDesignCanvas,
+        guiDesignMode: input.request.guiDesignMode,
         mode: input.request.mode,
         disableUserInput: input.request.disableUserInput,
         imContext: input.request.imContext,
