@@ -14,6 +14,7 @@
 
 import { spawn, type ChildProcess } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
+import { shellSpawnEnv } from './builtin-tool-utils.js'
 import { getLanguageServer, resolveServerCommand } from './lsp-servers.js'
 import { handleNotification } from './lsp-notifications.js'
 
@@ -411,7 +412,7 @@ async function createSession(workspaceRoot: string, serverKey: string): Promise<
   const proc = spawn(cmd.command, cmd.args, {
     stdio: ['pipe', 'pipe', 'pipe'],
     cwd: workspaceRoot,
-    env: process.env,
+    env: shellSpawnEnv(),
     windowsHide: true
   })
 
@@ -420,7 +421,7 @@ async function createSession(workspaceRoot: string, serverKey: string): Promise<
     workspaceRoot,
     serverKey,
     serverDisplayName: server.displayName,
-    pythonPath: process.env.PYTHON_PATH ?? 'python3',
+    pythonPath: 'python3',
     refCount: 1,
     cleanupTimer: null,
     stdoutBuffer: Buffer.alloc(0),

@@ -71,7 +71,6 @@ afterEach(() => {
 
 describe('resolveServerCommand', () => {
   it('uses where on Windows when looking up a server on PATH', async () => {
-    accessMock.mockRejectedValueOnce(new Error('missing local install'))
     vi.spyOn(process, 'platform', 'get').mockReturnValue('win32')
 
     spawnMock.mockImplementation((command: string, args: string[]) => {
@@ -89,6 +88,7 @@ describe('resolveServerCommand', () => {
       command: 'typescript-language-server',
       args: ['--stdio']
     })
+    expect(accessMock).not.toHaveBeenCalled()
   })
 })
 

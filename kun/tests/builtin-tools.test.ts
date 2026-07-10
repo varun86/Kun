@@ -182,6 +182,7 @@ describe('Kun built-in tools', () => {
 
     expect(names).toEqual(expect.arrayContaining(['read', 'grep', 'find', 'ls']))
     expect(names).not.toContain('bash')
+    expect(names).not.toContain('lsp')
     expect(names).not.toContain('edit')
     expect(names).not.toContain('write')
   })
@@ -192,6 +193,7 @@ describe('Kun built-in tools', () => {
 
     expect(names).toEqual(expect.arrayContaining(['read', 'grep', 'find', 'ls', 'edit', 'write']))
     expect(names).not.toContain('bash')
+    expect(names).not.toContain('lsp')
   })
 
   it('blocks direct file writes in read-only sandbox mode', async () => {
@@ -289,6 +291,25 @@ describe('Kun built-in tools', () => {
       output: {
         code: 'sandbox_command_blocked'
       }
+    })
+  })
+
+  it('blocks language-server process startup in a read-only sandbox', async () => {
+    const result = await host.execute(
+      {
+        callId: 'call_lsp',
+        toolName: 'lsp',
+        arguments: { operation: 'getDiagnostics', filePath: 'app.ts' }
+      },
+      buildContext(workspace, { sandboxMode: 'read-only' })
+    )
+
+    expect(result.approved).toBe(false)
+    expect(result.item).toMatchObject({
+      kind: 'tool_result',
+      toolName: 'lsp',
+      isError: true,
+      output: { code: 'sandbox_command_blocked' }
     })
   })
 
