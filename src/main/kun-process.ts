@@ -50,8 +50,6 @@ import {
   WebCapabilityConfig
 } from '../../kun/src/contracts/capabilities.js'
 import {
-  buildClawScheduleMcpArgs,
-  GUI_SCHEDULE_MCP_SERVER_NAME,
   resolveClawScheduleMcpCommand,
   resolveKunMcpJsonPath,
   type ClawScheduleMcpLaunchConfig
@@ -59,14 +57,6 @@ import {
 import { defaultKunDataDir } from './runtime/kun-adapter'
 import { resolveClaudeBinary } from './agent-sdk-installer'
 import { appendManagedLogLine } from './logger'
-import {
-  comparableSkillRootPath,
-  guiSkillManagedComparablePaths,
-  guiSkillWorkspaceRootsForRuntime,
-  guiSkillRootsForRuntime,
-  isCodexPluginCacheRoot,
-  normalizeSkillRootPath
-} from './services/skill-service'
 import {
   KunProcessController,
   type KunUnexpectedExitInfo
@@ -92,6 +82,13 @@ import {
   speechGenConfigForRuntime,
   videoGenConfigForRuntime
 } from './runtime/kun-runtime-capability-config'
+import {
+  buildGuiScheduleKunMcpServer,
+  GUI_SCHEDULE_MCP_SERVER_NAME,
+  readGuiManagedMcpServers,
+  readJsonObjectIfExists,
+  skillCapabilityConfigForRuntime
+} from './runtime/kun-runtime-mcp-config'
 
 export type { KunUnexpectedExitInfo } from './runtime/kun-process-controller'
 export { resolveKunStartupTimeoutMs } from './runtime/kun-runtime-health-monitor'
@@ -111,7 +108,6 @@ const execFileAsync = promisify(execFile)
 const KUN_STOP_GRACE_MS = 5_000
 const KUN_STOP_FORCE_MS = 1_000
 const STDERR_TAIL_MAX_CHARS = 32_768
-const GUI_SCHEDULE_MCP_TIMEOUT_MS = 5_000
 const MAX_TCP_PORT = 65_535
 
 type KunLogStream = 'stdout' | 'stderr' | 'lifecycle'
@@ -579,195 +575,6 @@ export async function syncGuiManagedKunConfig(
   return parsedNext.data
 }
 
-function buildGuiScheduleKunMcpServer(
-  settings: AppSettingsV1,
-  launch: ClawScheduleMcpLaunchConfig
-): Record<string, unknown> {
-  return {
-    enabled: true,
-    transport: 'stdio',
-    command: resolveClawScheduleMcpCommand(launch),
-    args: buildClawScheduleMcpArgs(settings, launch),
-    env: {
-      ELECTRON_RUN_AS_NODE: '1'
-    },
-    trustScope: 'user',
-    timeoutMs: GUI_SCHEDULE_MCP_TIMEOUT_MS
-  }
-}
-
-async function skillCapabilityConfigForRuntime(
-  existing: Record<string, unknown>,
-  settings?: AppSettingsV1
-): Promise<Record<string, unknown>> {
-  // Carry over only the roots a user added by hand to the Kun config file.
-  // Drop previously-persisted GUI-managed roots so disabling a directory in
-  // settings actually removes it — otherwise a toggled-off root would stick
-  // around forever via `existing.roots`.
-  // GUI-managed roots are dropped from the carried-over set and rebuilt fresh
-  // below. Besides the common/extra candidates, auto-discovered Codex plugin
-  // caches count as managed too — otherwise old version directories from a
-  // plugin upgrade stay in `roots` forever (#392).
-  const managed = guiSkillManagedComparablePaths(settings)
-  const manualExisting = stringArrayValue(existing.roots)
-    .map(normalizeSkillRootPath)
-    .filter((path) =>
-      path.length > 0 &&
-      !managed.has(comparableSkillRootPath(path)) &&
-      !isCodexPluginCacheRoot(path))
-  const manualGlobalExisting = stringArrayValue(existing.globalRoots)
-    .map(normalizeSkillRootPath)
-    .filter((path) =>
-      path.length > 0 &&
-      !managed.has(comparableSkillRootPath(path)) &&
-      !isCodexPluginCacheRoot(path))
-  const guiRoots = await guiSkillRootsForRuntime(settings)
-  const roots = uniqueStrings([
-    ...manualExisting,
-    ...guiRoots.filter((root) => root.scope === 'project').map((root) => root.path)
-  ])
-  const globalRoots = uniqueStrings([
-    ...manualGlobalExisting,
-    ...guiRoots.filter((root) => root.scope === 'global').map((root) => root.path)
-  ])
-  return {
-    ...existing,
-    // Auto-enable once we discover skill roots. There is no user-facing skills
-    // enable toggle, so a persisted `enabled: false` is only ever the schema
-    // default leaking onto disk — it must not permanently suppress discovered
-    // skills. An explicit `true` still forces on even with no roots.
-    enabled: roots.length > 0 || globalRoots.length > 0 || existing.enabled === true,
-    roots,
-    workspaceRoots: guiSkillWorkspaceRootsForRuntime(settings),
-    // #149: Pass global skill roots from settings (e.g. ~/.kun/skills)
-    globalRoots,
-    // Skills the user disabled in the GUI. Forwarded so the runtime drops them
-    // from discovery — without this they stay loadable via load_skill and keep
-    // appearing in the catalog despite the GUI toggle (#392).
-    disabledIds: settings?.disabledSkillIds ?? stringArrayValue(existing.disabledIds),
-    legacySkillMd: existing.legacySkillMd === false ? false : true
-  }
-}
-
-function stringArrayValue(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
-    : []
-}
-
-function uniqueStrings(values: string[]): string[] {
-  const seen = new Set<string>()
-  const out: string[] = []
-  for (const value of values) {
-    if (!value || seen.has(value)) continue
-    seen.add(value)
-    out.push(value)
-  }
-  return out
-}
-
-async function readGuiManagedMcpServers(path: string): Promise<Record<string, Record<string, unknown>>> {
-  const parsed = await readJsonObjectIfExists(path)
-  if (!parsed) return {}
-
-  const rawServers = mcpServersFromGuiConfig(parsed)
-  const normalizedEntries = Object.entries(rawServers)
-    .map(([serverId, server]) => {
-      const normalized = normalizeGuiManagedMcpServer(server)
-      return normalized ? [serverId, normalized] as const : null
-    })
-    .filter((entry): entry is readonly [string, Record<string, unknown>] => entry !== null)
-
-  return Object.fromEntries(normalizedEntries)
-}
-
-function mcpServersFromGuiConfig(config: Record<string, unknown>): Record<string, unknown> {
-  const directServers = objectValue(config.servers)
-  if (Object.keys(directServers).length > 0) return directServers
-
-  const capabilities = objectValue(config.capabilities)
-  const mcp = objectValue(capabilities.mcp)
-  return objectValue(mcp.servers)
-}
-
-function normalizeGuiManagedMcpServer(server: unknown): Record<string, unknown> | null {
-  const raw = objectValue(server)
-  const command = scalarStringValue(raw.command)
-  const cwd = scalarStringValue(raw.cwd)?.trim()
-  const url = scalarStringValue(raw.url)
-  const args = stringArrayValue(raw.args)
-  const headers = stringRecordValue(raw.headers)
-  const env = stringRecordValue(raw.env)
-  const oauth = objectValue(raw.oauth)
-  const transport = normalizeMcpTransport(raw.transport, command, url)
-  if (!transport) return null
-
-  const workspaceRoots = stringArrayValue(raw.workspaceRoots)
-  const trustedWorkspaceRoots = stringArrayValue(raw.trustedWorkspaceRoots)
-  const trustScope = normalizeMcpTrustScope(raw.trustScope, trustedWorkspaceRoots)
-  if (trustScope === 'workspace' && trustedWorkspaceRoots.length === 0) return null
-
-  const timeoutMs = positiveIntegerValue(raw.timeoutMs)
-  const parsed = McpServerConfig.safeParse({
-    enabled: raw.enabled === false || raw.disabled === true ? false : true,
-    transport,
-    ...(command ? { command } : {}),
-    ...(transport === 'stdio' && cwd ? { cwd } : {}),
-    ...(args.length > 0 ? { args } : {}),
-    ...(url ? { url } : {}),
-    ...(Object.keys(headers).length > 0 ? { headers } : {}),
-    ...(Object.keys(env).length > 0 ? { env } : {}),
-    ...(workspaceRoots.length > 0 ? { workspaceRoots } : {}),
-    ...(Object.keys(oauth).length > 0 ? { oauth } : {}),
-    trustScope,
-    ...(trustedWorkspaceRoots.length > 0 ? { trustedWorkspaceRoots } : {}),
-    ...(timeoutMs ? { timeoutMs } : {})
-  })
-
-  return parsed.success ? objectValue(parsed.data) : null
-}
-
-function normalizeMcpTransport(
-  value: unknown,
-  command: string | undefined,
-  url: string | undefined
-): 'stdio' | 'streamable-http' | 'sse' | null {
-  if (value === 'stdio' || value === 'streamable-http' || value === 'sse') return value
-  if (command) return 'stdio'
-  if (url) return 'streamable-http'
-  return null
-}
-
-function normalizeMcpTrustScope(
-  value: unknown,
-  trustedWorkspaceRoots: string[]
-): 'user' | 'workspace' {
-  if (value === 'user' || value === 'workspace') return value
-  return trustedWorkspaceRoots.length > 0 ? 'workspace' : 'user'
-}
-
-function scalarStringValue(value: unknown): string | undefined {
-  return typeof value === 'string'
-    ? value
-    : typeof value === 'number' || typeof value === 'boolean'
-      ? String(value)
-      : undefined
-}
-
-function stringRecordValue(value: unknown): Record<string, string> {
-  const record = objectValue(value)
-  const next: Record<string, string> = {}
-  for (const [key, item] of Object.entries(record)) {
-    const normalized = scalarStringValue(item)
-    if (normalized !== undefined) next[key] = normalized
-  }
-  return next
-}
-
-function positiveIntegerValue(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined
-}
-
 const VALID_PROFILE_REASONING = new Set(['auto', 'low', 'medium', 'high', 'max'])
 
 /**
@@ -835,18 +642,6 @@ export function subagentProfilesForRuntime(subagents: KunSubagentsSettingsV1): S
     maxChildRuns: candidate.maxChildRuns,
     ...(subagents.defaultToolPolicy ? { defaultToolPolicy: subagents.defaultToolPolicy } : {})
   })
-}
-
-async function readJsonObjectIfExists(path: string): Promise<Record<string, unknown> | null> {
-  try {
-    const text = await readFile(path, 'utf8')
-    const parsed = JSON.parse(text) as unknown
-    return objectValue(parsed)
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
-    if (error instanceof SyntaxError) return null
-    throw error
-  }
 }
 
 type SafeParseSchema = {
