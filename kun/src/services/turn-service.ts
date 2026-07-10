@@ -31,6 +31,7 @@ import { touchThread } from '../domain/thread.js'
 import type { RuntimeEventRecorder } from './runtime-event-recorder.js'
 import type { UsageService } from './usage-service.js'
 import { createImmutablePrefix } from '../cache/immutable-prefix.js'
+import { withThreadStoreMutation } from './thread-mutation-coordinator.js'
 
 export type TurnServiceDeps = {
   threadStore: ThreadStore
@@ -59,7 +60,6 @@ export class TurnConflictError extends Error {}
 export class TurnService {
   private deps: TurnServiceDeps
   private readonly inflightTurns = new Map<string, AbortController>()
-  private readonly threadMutationQueues = new Map<string, Promise<unknown>>()
 
   constructor(deps: TurnServiceDeps) {
     this.deps = deps
@@ -146,28 +146,32 @@ export class TurnService {
     threadId: string
     turnId: string
   }): Promise<RewindThreadResponse> {
-    const thread = await this.deps.threadStore.get(input.threadId)
-    if (!thread) throw new Error(`thread not found: ${input.threadId}`)
-    if (thread.status === 'running') throw new Error('Cannot rewind while a turn is running.')
-    const targetIndex = thread.turns.findIndex((turn) => turn.id === input.turnId)
-    if (targetIndex < 0) throw new Error(`turn not found: ${input.turnId}`)
+    return this.withThreadMutation(input.threadId, async () => {
+      const thread = await this.deps.threadStore.get(input.threadId)
+      if (!thread) throw new Error(`thread not found: ${input.threadId}`)
+      if (thread.status === 'running') throw new Error('Cannot rewind while a turn is running.')
+      const targetIndex = thread.turns.findIndex((turn) => turn.id === input.turnId)
+      if (targetIndex < 0) throw new Error(`turn not found: ${input.turnId}`)
 
-    const keptTurns = thread.turns.slice(0, targetIndex)
-    const keptTurnIds = new Set(keptTurns.map((turn) => turn.id))
-    const items = await this.deps.sessionStore.loadItems(input.threadId)
-    const keptItems = items.filter((item) => keptTurnIds.has(item.turnId))
-    await this.deps.sessionStore.rewriteItems(input.threadId, keptItems)
-    await this.upsertThread(input.threadId, (current) => ({
-      ...touchThread(current, this.deps.nowIso()),
-      status: 'idle',
-      turns: current.turns.slice(0, targetIndex)
-    }))
-    return {
-      threadId: input.threadId,
-      turnId: input.turnId,
-      removedTurns: thread.turns.length - targetIndex,
-      remainingTurns: keptTurns.length
-    }
+      const keptTurns = thread.turns.slice(0, targetIndex)
+      const keptTurnIds = new Set(keptTurns.map((turn) => turn.id))
+      const items = await this.deps.sessionStore.loadItems(input.threadId)
+      const keptItems = items.filter((item) => keptTurnIds.has(item.turnId))
+      await this.deps.sessionStore.rewriteItems(input.threadId, keptItems)
+      const now = this.deps.nowIso()
+      await this.deps.threadStore.upsert({
+        ...touchThread(thread, now),
+        status: 'idle',
+        turns: keptTurns,
+        updatedAt: now
+      })
+      return {
+        threadId: input.threadId,
+        turnId: input.turnId,
+        removedTurns: thread.turns.length - targetIndex,
+        remainingTurns: keptTurns.length
+      }
+    })
   }
 
   async steerTurn(input: {
@@ -616,17 +620,7 @@ export class TurnService {
   }
 
   private async withThreadMutation<T>(threadId: string, operation: () => Promise<T>): Promise<T> {
-    const previous = this.threadMutationQueues.get(threadId) ?? Promise.resolve()
-    const run = previous.catch(() => undefined).then(operation)
-    const guard = run.then(() => undefined, () => undefined)
-    this.threadMutationQueues.set(threadId, guard)
-    try {
-      return await run
-    } finally {
-      if (this.threadMutationQueues.get(threadId) === guard) {
-        this.threadMutationQueues.delete(threadId)
-      }
-    }
+    return withThreadStoreMutation(this.deps.threadStore, threadId, operation)
   }
 
   private finalizeOpenItems(

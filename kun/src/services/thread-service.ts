@@ -26,6 +26,7 @@ import type { AgentSession } from '../domain/session.js'
 import { repairModelHistoryItems } from '../domain/model-history-repair.js'
 import type { RuntimeEventRecorder } from './runtime-event-recorder.js'
 import { withFileMutationQueue } from '../adapters/tool/file-mutation-queue.js'
+import { withThreadStoreMutation } from './thread-mutation-coordinator.js'
 import { DEFAULT_KUN_MODEL } from '../config/kun-config.js'
 import { isGuiPlanRelativePath } from '../shared/gui-plan.js'
 import {
@@ -177,26 +178,29 @@ export class ThreadService {
     costBudgetWarningSent?: boolean
     relation?: ThreadRelation
   }): Promise<ThreadRecord> {
-    const current = await this.threadStore.get(threadId)
-    if (!current) throw new Error(`thread not found: ${threadId}`)
-    const { costBudgetUsd, costBudgetWarningSent, ...standardPatch } = patch
-    const merged: ThreadRecord = { ...current, ...standardPatch }
-    if (costBudgetUsd === null) {
-      delete (merged as { costBudgetUsd?: number }).costBudgetUsd
-      delete (merged as { costBudgetWarningSent?: boolean }).costBudgetWarningSent
-    } else if (costBudgetUsd !== undefined) {
-      merged.costBudgetUsd = costBudgetUsd
-      merged.costBudgetWarningSent = false
-    } else if (costBudgetWarningSent !== undefined) {
-      merged.costBudgetWarningSent = costBudgetWarningSent
-    }
-    if (patch.relation !== undefined && patch.relation !== 'side') {
-      // Promoting a side thread clears the parent link so the thread
-      // surfaces in the default list as a standalone primary thread.
-      delete (merged as { parentThreadId?: string }).parentThreadId
-    }
-    const updated = touchThread(merged, this.nowIso())
-    await this.threadStore.upsert(updated)
+    const updated = await this.withThreadMutation(threadId, async () => {
+      const current = await this.threadStore.get(threadId)
+      if (!current) throw new Error(`thread not found: ${threadId}`)
+      const { costBudgetUsd, costBudgetWarningSent, ...standardPatch } = patch
+      const merged: ThreadRecord = { ...current, ...standardPatch }
+      if (costBudgetUsd === null) {
+        delete (merged as { costBudgetUsd?: number }).costBudgetUsd
+        delete (merged as { costBudgetWarningSent?: boolean }).costBudgetWarningSent
+      } else if (costBudgetUsd !== undefined) {
+        merged.costBudgetUsd = costBudgetUsd
+        merged.costBudgetWarningSent = false
+      } else if (costBudgetWarningSent !== undefined) {
+        merged.costBudgetWarningSent = costBudgetWarningSent
+      }
+      if (patch.relation !== undefined && patch.relation !== 'side') {
+        // Promoting a side thread clears the parent link so the thread
+        // surfaces in the default list as a standalone primary thread.
+        delete (merged as { parentThreadId?: string }).parentThreadId
+      }
+      const next = touchThread(merged, this.nowIso())
+      await this.threadStore.upsert(next)
+      return next
+    })
     await this.events.record({
       kind: 'thread_updated',
       threadId,
@@ -214,34 +218,36 @@ export class ThreadService {
   }
 
   async setGoal(threadId: string, request: SetThreadGoalRequest): Promise<ThreadGoal> {
-    const current = await this.threadStore.get(threadId)
-    if (!current) throw new Error(`thread not found: ${threadId}`)
-    if (!current.goal && !request.objective) {
-      throw new Error(`cannot update goal for thread ${threadId}: no goal exists`)
-    }
+    const goal = await this.withThreadMutation(threadId, async () => {
+      const current = await this.threadStore.get(threadId)
+      if (!current) throw new Error(`thread not found: ${threadId}`)
+      if (!current.goal && !request.objective) {
+        throw new Error(`cannot update goal for thread ${threadId}: no goal exists`)
+      }
 
-    const now = this.nowIso()
-    const existing = current.goal
-    const objective = request.objective?.trim()
-    const goal: ThreadGoal = {
-      threadId,
-      objective: objective ?? existing?.objective ?? '',
-      status: request.status ?? (objective ? 'active' : existing?.status ?? 'active'),
-      ...(request.tokenBudget !== undefined
-        ? request.tokenBudget === null
-          ? {}
-          : { tokenBudget: request.tokenBudget }
-        : existing?.tokenBudget !== undefined
-          ? { tokenBudget: existing.tokenBudget }
-          : {}),
-      tokensUsed: existing?.tokensUsed ?? 0,
-      timeUsedSeconds: existing?.timeUsedSeconds ?? 0,
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: now
-    }
+      const now = this.nowIso()
+      const existing = current.goal
+      const objective = request.objective?.trim()
+      const next: ThreadGoal = {
+        threadId,
+        objective: objective ?? existing?.objective ?? '',
+        status: request.status ?? (objective ? 'active' : existing?.status ?? 'active'),
+        ...(request.tokenBudget !== undefined
+          ? request.tokenBudget === null
+            ? {}
+            : { tokenBudget: request.tokenBudget }
+          : existing?.tokenBudget !== undefined
+            ? { tokenBudget: existing.tokenBudget }
+            : {}),
+        tokensUsed: existing?.tokensUsed ?? 0,
+        timeUsedSeconds: existing?.timeUsedSeconds ?? 0,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now
+      }
 
-    const updated = touchThread({ ...current, goal }, now)
-    await this.threadStore.upsert(updated)
+      await this.threadStore.upsert(touchThread({ ...current, goal: next }, now))
+      return next
+    })
     await this.events.record({
       kind: 'goal_updated',
       threadId,
@@ -254,31 +260,37 @@ export class ThreadService {
   async recordGoalUsage(threadId: string, tokenDelta: number): Promise<ThreadGoal | null> {
     const delta = Math.max(0, Math.floor(tokenDelta))
     if (delta === 0) return this.getGoal(threadId)
-    const current = await this.threadStore.get(threadId)
-    if (!current?.goal || current.goal.status !== 'active') return current?.goal ?? null
-    const nextTokens = current.goal.tokensUsed + delta
-    const goal: ThreadGoal = {
-      ...current.goal,
-      tokensUsed: nextTokens,
-      status: current.goal.tokenBudget !== undefined && current.goal.tokenBudget !== null && nextTokens >= current.goal.tokenBudget
-        ? 'usageLimited'
-        : current.goal.status,
-      updatedAt: this.nowIso()
-    }
-    await this.threadStore.upsert(touchThread({ ...current, goal }, goal.updatedAt))
+    const goal = await this.withThreadMutation(threadId, async () => {
+      const current = await this.threadStore.get(threadId)
+      if (!current?.goal || current.goal.status !== 'active') return current?.goal ?? null
+      const nextTokens = current.goal.tokensUsed + delta
+      const next: ThreadGoal = {
+        ...current.goal,
+        tokensUsed: nextTokens,
+        status: current.goal.tokenBudget !== undefined && current.goal.tokenBudget !== null && nextTokens >= current.goal.tokenBudget
+          ? 'usageLimited'
+          : current.goal.status,
+        updatedAt: this.nowIso()
+      }
+      await this.threadStore.upsert(touchThread({ ...current, goal: next }, next.updatedAt))
+      return next
+    })
+    if (!goal) return null
     await this.events.record({ kind: 'goal_updated', threadId, goal })
     return goal
   }
 
   async clearGoal(threadId: string): Promise<boolean> {
-    const current = await this.threadStore.get(threadId)
-    if (!current) throw new Error(`thread not found: ${threadId}`)
-    if (!current.goal) {
-      return false
-    }
-    const updated = touchThread({ ...current }, this.nowIso())
-    delete (updated as { goal?: ThreadGoal }).goal
-    await this.threadStore.upsert(updated)
+    const cleared = await this.withThreadMutation(threadId, async () => {
+      const current = await this.threadStore.get(threadId)
+      if (!current) throw new Error(`thread not found: ${threadId}`)
+      if (!current.goal) return false
+      const updated = touchThread({ ...current }, this.nowIso())
+      delete (updated as { goal?: ThreadGoal }).goal
+      await this.threadStore.upsert(updated)
+      return true
+    })
+    if (!cleared) return false
     await this.events.record({
       kind: 'goal_cleared',
       threadId,
@@ -294,23 +306,25 @@ export class ThreadService {
   }
 
   async setTodos(threadId: string, request: SetThreadTodosRequest): Promise<ThreadTodoList> {
-    const current = await this.threadStore.get(threadId)
-    if (!current) throw new Error(`thread not found: ${threadId}`)
-    const now = this.nowIso()
-    const items = normalizeTodoItems({
-      rawItems: request.todos,
-      existingItems: current.todos?.items ?? [],
-      now,
-      ids: this.ids
+    const todos = await this.withThreadMutation(threadId, async () => {
+      const current = await this.threadStore.get(threadId)
+      if (!current) throw new Error(`thread not found: ${threadId}`)
+      const now = this.nowIso()
+      const items = normalizeTodoItems({
+        rawItems: request.todos,
+        existingItems: current.todos?.items ?? [],
+        now,
+        ids: this.ids
+      })
+      await this.patchPlanMarkdownForTodoStatusChanges(current, items)
+      const next: ThreadTodoList = {
+        threadId,
+        items,
+        updatedAt: now
+      }
+      await this.threadStore.upsert(touchThread({ ...current, todos: next }, now))
+      return next
     })
-    await this.patchPlanMarkdownForTodoStatusChanges(current, items)
-    const todos: ThreadTodoList = {
-      threadId,
-      items,
-      updatedAt: now
-    }
-    const updated = touchThread({ ...current, todos }, now)
-    await this.threadStore.upsert(updated)
     await this.events.record({
       kind: 'todos_updated',
       threadId,
@@ -320,12 +334,16 @@ export class ThreadService {
   }
 
   async clearTodos(threadId: string): Promise<boolean> {
-    const current = await this.threadStore.get(threadId)
-    if (!current) throw new Error(`thread not found: ${threadId}`)
-    if (!current.todos) return false
-    const updated = touchThread({ ...current }, this.nowIso())
-    delete (updated as { todos?: ThreadTodoList }).todos
-    await this.threadStore.upsert(updated)
+    const cleared = await this.withThreadMutation(threadId, async () => {
+      const current = await this.threadStore.get(threadId)
+      if (!current) throw new Error(`thread not found: ${threadId}`)
+      if (!current.todos) return false
+      const updated = touchThread({ ...current }, this.nowIso())
+      delete (updated as { todos?: ThreadTodoList }).todos
+      await this.threadStore.upsert(updated)
+      return true
+    })
+    if (!cleared) return false
     await this.events.record({
       kind: 'todos_cleared',
       threadId,
@@ -335,35 +353,41 @@ export class ThreadService {
   }
 
   async syncTodosFromPlan(threadId: string, options: SyncPlanTodosOptions): Promise<ThreadTodoList> {
-    const current = await this.threadStore.get(threadId)
-    if (!current) throw new Error(`thread not found: ${threadId}`)
-    const relativePath = normalizePlanRelativePath(options.relativePath)
-    if (!isGuiPlanRelativePath(relativePath)) {
-      throw new Error(`invalid GUI plan relative path: ${options.relativePath}`)
-    }
-    const now = this.nowIso()
-    const planItems = extractPlanTodos({
-      markdown: options.markdown,
-      planId: options.planId,
-      relativePath,
-      threadId,
-      now
+    const todos = await this.withThreadMutation(threadId, async () => {
+      const current = await this.threadStore.get(threadId)
+      if (!current) throw new Error(`thread not found: ${threadId}`)
+      const relativePath = normalizePlanRelativePath(options.relativePath)
+      if (!isGuiPlanRelativePath(relativePath)) {
+        throw new Error(`invalid GUI plan relative path: ${options.relativePath}`)
+      }
+      const now = this.nowIso()
+      const planItems = extractPlanTodos({
+        markdown: options.markdown,
+        planId: options.planId,
+        relativePath,
+        threadId,
+        now
+      })
+      const next = mergePlanTodos({
+        threadId,
+        existing: current.todos ?? null,
+        planItems,
+        now,
+        preserveCompleted: options.preserveCompleted ?? true
+      })
+      await this.threadStore.upsert(touchThread({ ...current, todos: next }, now))
+      return next
     })
-    const todos = mergePlanTodos({
-      threadId,
-      existing: current.todos ?? null,
-      planItems,
-      now,
-      preserveCompleted: options.preserveCompleted ?? true
-    })
-    const updated = touchThread({ ...current, todos }, now)
-    await this.threadStore.upsert(updated)
     await this.events.record({
       kind: 'todos_updated',
       threadId,
       todos
     })
     return todos
+  }
+
+  private async withThreadMutation<T>(threadId: string, operation: () => Promise<T>): Promise<T> {
+    return withThreadStoreMutation(this.threadStore, threadId, operation)
   }
 
   private async patchPlanMarkdownForTodoStatusChanges(
@@ -409,7 +433,7 @@ export class ThreadService {
   }
 
   async delete(threadId: string): Promise<boolean> {
-    const ok = await this.threadStore.delete(threadId)
+    const ok = await this.withThreadMutation(threadId, () => this.threadStore.delete(threadId))
     if (!ok) return false
     this.sessionStore.clearThreadMemory(threadId)
     this.onDeleted?.(threadId)

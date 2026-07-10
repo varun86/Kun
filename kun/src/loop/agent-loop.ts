@@ -20,6 +20,7 @@ import type { UserInputGate, UserInputQuestion, UserInputResolution } from '../p
 import type { UsageService } from '../services/usage-service.js'
 import type { TurnService } from '../services/turn-service.js'
 import type { RuntimeEventRecorder } from '../services/runtime-event-recorder.js'
+import { withThreadStoreMutation } from '../services/thread-mutation-coordinator.js'
 import type { PipelineStage } from '../contracts/events.js'
 import type { RuntimeErrorSeverity } from '../contracts/errors.js'
 import type { IdGenerator } from '../ports/id-generator.js'
@@ -59,7 +60,7 @@ import { touchThread } from '../domain/thread.js'
 import { memoryPreview } from '../shared/memory-preview.js'
 import { repairModelHistoryItems } from '../domain/model-history-repair.js'
 import type { TurnItem } from '../contracts/items.js'
-import type { ThreadGoal } from '../contracts/threads.js'
+import type { ThreadGoal, ThreadRecord } from '../contracts/threads.js'
 import { modelCapabilitiesForModel, type ContextCompactionConfig } from './model-context-profile.js'
 import type { SkillRuntime } from '../skills/skill-runtime.js'
 import type { InstructionRuntime } from '../instructions/instruction-runtime.js'
@@ -418,6 +419,18 @@ export class AgentLoop {
     })
   }
 
+  /** Atomically read and update one thread with the services that share this store. */
+  private async mutateThread<T>(
+    threadId: string,
+    operation: (thread: ThreadRecord) => T | Promise<T>
+  ): Promise<T | null> {
+    return withThreadStoreMutation<T | null>(this.opts.threadStore, threadId, async () => {
+      const current = await this.opts.threadStore.get(threadId)
+      if (!current) return null
+      return operation(current)
+    })
+  }
+
   /** Cancel any pending goal auto-resume timers (called on runtime shutdown). */
   shutdownGoalResume(): void {
     this.goalResume.shutdown()
@@ -705,13 +718,17 @@ export class AgentLoop {
     })
     if (!title) return
 
-    // Re-check the title is still upgradeable (no user rename raced us).
-    const latest = await this.opts.threadStore.get(threadId)
-    if (!latest || !canUpgradeThreadTitle(latest)) return
-    // Keep titleAuto:true — the LLM title is still auto-generated, so a later
-    // user rename can still lock it, but we won't re-title (gated by turn count).
-    const updated = touchThread({ ...latest, title, titleAuto: true }, this.opts.nowIso())
-    await this.opts.threadStore.upsert(updated)
+    // Re-check and persist under the shared mutation lock so a concurrent
+    // title/goal/turn update cannot be overwritten by this delayed model call.
+    const updated = await this.mutateThread(threadId, async (latest) => {
+      if (!canUpgradeThreadTitle(latest)) return null
+      // Keep titleAuto:true — the LLM title is still auto-generated, so a later
+      // user rename can still lock it, but we won't re-title (gated by turn count).
+      const next = touchThread({ ...latest, title, titleAuto: true }, this.opts.nowIso())
+      await this.opts.threadStore.upsert(next)
+      return next
+    })
+    if (!updated) return
     await this.opts.events.record({
       kind: 'thread_updated',
       threadId,
@@ -771,21 +788,23 @@ export class AgentLoop {
     const elapsedSeconds = Math.floor(Math.max(0, this.nowMs() - timer.startedAtMs) / 1000)
     if (elapsedSeconds <= 0) return
 
-    const current = await this.opts.threadStore.get(threadId)
-    const currentGoal = current?.goal
-    if (!current || !currentGoal) return
-    if (currentGoal.createdAt !== timer.createdAt || currentGoal.objective !== timer.objective) {
-      return
-    }
+    const goal = await this.mutateThread(threadId, async (current) => {
+      const currentGoal = current.goal
+      if (!currentGoal) return null
+      if (currentGoal.createdAt !== timer.createdAt || currentGoal.objective !== timer.objective) {
+        return null
+      }
 
-    const now = this.opts.nowIso()
-    const goal: ThreadGoal = {
-      ...currentGoal,
-      timeUsedSeconds: (currentGoal.timeUsedSeconds ?? 0) + elapsedSeconds,
-      updatedAt: now
-    }
-    const updated = touchThread({ ...current, goal }, now)
-    await this.opts.threadStore.upsert(updated)
+      const now = this.opts.nowIso()
+      const next: ThreadGoal = {
+        ...currentGoal,
+        timeUsedSeconds: (currentGoal.timeUsedSeconds ?? 0) + elapsedSeconds,
+        updatedAt: now
+      }
+      await this.opts.threadStore.upsert(touchThread({ ...current, goal: next }, now))
+      return next
+    })
+    if (!goal) return
     await this.opts.events.record({
       kind: 'goal_updated',
       threadId,
@@ -883,12 +902,15 @@ export class AgentLoop {
     status: ThreadGoal['status'],
     message?: string
   ): Promise<void> {
-    const current = await this.opts.threadStore.get(threadId)
-    const goal = current?.goal
-    if (!current || !goal || goal.status === status) return
-    const now = this.opts.nowIso()
-    const next: ThreadGoal = { ...goal, status, updatedAt: now }
-    await this.opts.threadStore.upsert(touchThread({ ...current, goal: next }, now))
+    const next = await this.mutateThread(threadId, async (current) => {
+      const goal = current.goal
+      if (!goal || goal.status === status) return null
+      const now = this.opts.nowIso()
+      const updated: ThreadGoal = { ...goal, status, updatedAt: now }
+      await this.opts.threadStore.upsert(touchThread({ ...current, goal: updated }, now))
+      return updated
+    })
+    if (!next) return
     await this.opts.events.record({ kind: 'goal_updated', threadId, goal: next })
     if (message) {
       await this.opts.events.record({
@@ -2445,23 +2467,23 @@ export class AgentLoop {
 
   private async rewriteThreadItemsFromSession(threadId: string, items: TurnItem[]): Promise<void> {
     if (items.length === 0) return
-    const current = await this.opts.threadStore.get(threadId)
-    if (!current) return
     const itemsByTurn = new Map<string, TurnItem[]>()
     for (const item of items) {
       const turnItems = itemsByTurn.get(item.turnId) ?? []
       turnItems.push(item)
       itemsByTurn.set(item.turnId, turnItems)
     }
-    let changed = false
-    const turns = current.turns.map((turn) => {
-      const sessionItems = itemsByTurn.get(turn.id)
-      if (!sessionItems) return turn
-      changed = true
-      return { ...turn, items: placeCompactionsAtTurnEnd(sessionItems) }
+    await this.mutateThread(threadId, async (current) => {
+      let changed = false
+      const turns = current.turns.map((turn) => {
+        const sessionItems = itemsByTurn.get(turn.id)
+        if (!sessionItems) return turn
+        changed = true
+        return { ...turn, items: placeCompactionsAtTurnEnd(sessionItems) }
+      })
+      if (!changed) return
+      await this.opts.threadStore.upsert(touchThread({ ...current, turns }, this.opts.nowIso()))
     })
-    if (!changed) return
-    await this.opts.threadStore.upsert(touchThread({ ...current, turns }, this.opts.nowIso()))
   }
 
   private async recordTokenEconomySavings(input: {
@@ -2666,11 +2688,25 @@ export class AgentLoop {
     }
     if (spent >= budget * 0.8 && thread.costBudgetWarningSent !== true) {
       const message = `Cost budget warning: $${spent.toFixed(4)} used of $${budget.toFixed(4)}.`
-      await this.opts.threadStore.upsert({
-        ...thread,
-        costBudgetWarningSent: true,
-        updatedAt: this.opts.nowIso()
+      const warningMarked = await this.mutateThread(threadId, async (current) => {
+        const currentBudget = current.costBudgetUsd
+        if (
+          typeof currentBudget !== 'number' ||
+          !Number.isFinite(currentBudget) ||
+          currentBudget <= 0 ||
+          spent < currentBudget * 0.8 ||
+          current.costBudgetWarningSent === true
+        ) {
+          return false
+        }
+        await this.opts.threadStore.upsert({
+          ...current,
+          costBudgetWarningSent: true,
+          updatedAt: this.opts.nowIso()
+        })
+        return true
       })
+      if (!warningMarked) return 'allow'
       await this.opts.turns.applyItem(threadId, makeErrorItem({
         id: `item_${turnId}_budget_warning`,
         threadId,
@@ -2694,18 +2730,21 @@ export class AgentLoop {
   private async recordGoalUsage(threadId: string, tokenDelta: number): Promise<void> {
     const delta = Math.max(0, Math.floor(tokenDelta))
     if (delta === 0) return
-    const thread = await this.opts.threadStore.get(threadId)
-    if (!thread?.goal || thread.goal.status !== 'active') return
-    const tokensUsed = thread.goal.tokensUsed + delta
-    const goal = {
-      ...thread.goal,
-      tokensUsed,
-      status: thread.goal.tokenBudget !== undefined && thread.goal.tokenBudget !== null && tokensUsed >= thread.goal.tokenBudget
-        ? 'usageLimited' as const
-        : 'active' as const,
-      updatedAt: this.opts.nowIso()
-    }
-    await this.opts.threadStore.upsert(touchThread({ ...thread, goal }, goal.updatedAt))
+    const goal = await this.mutateThread(threadId, async (thread) => {
+      if (!thread.goal || thread.goal.status !== 'active') return null
+      const tokensUsed = thread.goal.tokensUsed + delta
+      const next: ThreadGoal = {
+        ...thread.goal,
+        tokensUsed,
+        status: thread.goal.tokenBudget !== undefined && thread.goal.tokenBudget !== null && tokensUsed >= thread.goal.tokenBudget
+          ? 'usageLimited'
+          : 'active',
+        updatedAt: this.opts.nowIso()
+      }
+      await this.opts.threadStore.upsert(touchThread({ ...thread, goal: next }, next.updatedAt))
+      return next
+    })
+    if (!goal) return
     await this.opts.events.record({ kind: 'goal_updated', threadId, goal })
   }
 
