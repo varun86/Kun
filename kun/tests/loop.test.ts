@@ -48,6 +48,30 @@ describe('AgentLoop', () => {
     expect(h.inflight.size()).toBe(0)
   })
 
+  it('runs delegated SDK turns through the shared steering lifecycle', async () => {
+    let h!: ReturnType<typeof makeHarness>
+    let observedSteering = false
+    const sdkRuntime = {
+      handlesProvider: () => true,
+      runTurn: async (threadId: string, turnId: string) => {
+        observedSteering = (await h.sessionStore.loadItems(threadId)).some(
+          (item) => item.turnId === turnId && item.kind === 'user_message' && item.text === 'Also do this'
+        )
+        await h.turns.finishTurn({ threadId, turnId, status: 'completed' })
+        return 'completed' as const
+      }
+    }
+    h = makeHarness(makeSilentModel(), { sdkRuntime: sdkRuntime as never })
+    await bootstrapThread(h)
+    h.steering.enqueue(h.turnId, { text: 'Also do this' })
+
+    await expect(h.loop.runTurn(h.threadId, h.turnId)).resolves.toBe('completed')
+
+    expect(observedSteering).toBe(true)
+    const events = await h.sessionStore.loadEventsSince(h.threadId, 0)
+    expect(events).toContainEqual(expect.objectContaining({ kind: 'pipeline_stage', stage: 'post_start' }))
+  })
+
   it('bounds cached prompt-pressure hydration markers', () => {
     const h = makeHarness(makeSilentModel())
     const loop = h.loop as unknown as {

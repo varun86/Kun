@@ -457,12 +457,13 @@ export class AgentLoop {
     // the user's subscription; kun's brain is injected). All other providers
     // fall through to kun's native loop below.
     const sdkRuntime = this.opts.sdkRuntime
+    let delegatedSdkRuntime: AgentSdkRuntime | undefined
     if (sdkRuntime) {
       const thread = await this.opts.threadStore.get(threadId)
       const turn = thread?.turns.find((candidate) => candidate.id === turnId)
       const providerId = turn?.providerId?.trim() || thread?.providerId?.trim()
       if (sdkRuntime.handlesProvider(providerId)) {
-        return sdkRuntime.runTurn(threadId, turnId, signal)
+        delegatedSdkRuntime = sdkRuntime
       }
     }
     let goalTimer: GoalElapsedTimer | null = null
@@ -471,7 +472,7 @@ export class AgentLoop {
     try {
       goalTimer = await this.startGoalElapsedTimer(threadId)
       await this.recordPipelineStage(threadId, turnId, 'setup')
-      if (this.opts.toolStorm?.enabled !== false) {
+      if (!delegatedSdkRuntime && this.opts.toolStorm?.enabled !== false) {
         this.toolStormBreakers.set(turnId, new ToolStormBreaker(this.opts.toolStorm))
       }
       await this.recordPipelineStage(threadId, turnId, 'pre_start')
@@ -503,6 +504,14 @@ export class AgentLoop {
       }
       await this.drainSteering(threadId, turnId, signal)
       await this.recordPipelineStage(threadId, turnId, 'post_start')
+      if (delegatedSdkRuntime) {
+        const status = await delegatedSdkRuntime.runTurn(threadId, turnId, signal)
+        finalStatus = status
+        if (status === 'completed') {
+          void this.maybeGenerateThreadTitle(threadId, turnId, signal).catch(() => {})
+        }
+        return status
+      }
       const status = await this.loop(threadId, turnId, signal)
       const failure = status === 'failed' ? this.turnFailures.get(turnId) : undefined
       await this.opts.turns.finishTurn({
