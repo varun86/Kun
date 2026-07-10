@@ -18,9 +18,9 @@
   primitives without changing persisted session formats.
 - [x] 2.3 Implement a history coordinator that serializes per-thread mutations
   and retries only pure transformations after a revision conflict.
-- [ ] 2.4 Route compaction, history repair, and discard replacement writes through
+- [x] 2.4 Route compaction, history repair, and discard replacement writes through
   the coordinator without replaying model or tool side effects.
-- [ ] 2.5 Add legacy-session and concurrent append/compaction/repair race tests.
+- [x] 2.5 Add existing-session and concurrent append/compaction/repair race tests.
 
 ## 3. Low-risk internal boundaries
 

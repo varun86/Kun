@@ -361,100 +361,128 @@ export class TurnService {
     const thread = await this.deps.threadStore.get(input.threadId)
     if (!thread) throw new Error(`thread not found: ${input.threadId}`)
     const turnId = input.turnId ?? thread.turns[thread.turns.length - 1]?.id ?? this.deps.ids.next('turn')
-    const items = await this.deps.sessionStore.loadItems(input.threadId)
-    const history = effectiveHistoryAfterLatestCompaction(items)
-      .filter((item) => item.kind !== 'error')
     const prefix = this.deps.prefix ?? createImmutablePrefix({
       pinnedConstraints: ['user: preserve recent turns']
     })
-    let result = this.deps.compactor.compact({
+    const summaryItemId = this.deps.ids.next('compaction')
+    let started = false
+    const committed = await rewriteItemHistoryWithRetry({
+      sessionStore: this.deps.sessionStore,
       threadId: input.threadId,
-      turnId,
-      history,
-      prefix,
-      budgetTokens: input.request.budgetTokens,
-      reason: input.request.reason,
-      // Mark this as a user-requested compaction so the GUI renders it as a
-      // manual "已压缩" event rather than an automatic one.
-      auto: false
-    })
-    // Only surface lifecycle events (and persist the summary) when something
-    // was actually folded. A no-op compaction stays invisible in the timeline;
-    // the caller signals "nothing to compact" from the returned replacedTokens.
-    if (result.replacedTokens > 0) {
-      // Emit `started` before the persist so the live SSE stream shows a brief
-      // "正在压缩上下文" row. In model-summary mode this also covers the
-      // extra summarizer request.
-      await this.deps.events.record({
-        kind: 'compaction_started',
-        threadId: input.threadId,
-        turnId,
-        itemId: result.summaryItem.id,
-        auto: false
-      })
-      if (this.deps.contextCompaction?.summaryMode === 'model' && this.deps.model) {
-        const fallbackModel = modelForManualCompaction({
-          threadModel: thread.model,
-          defaultModel: this.deps.defaultModel,
-          clientModel: this.deps.model.model
-        })
-        const compactionModel = resolveCompactionModel({
-          contextCompaction: this.deps.contextCompaction,
-          fallbackModel
-        })
-        const model = compactionModel.model
-        const modelSummary = await summarizeCompactionWithModel({
+      maxAttempts: 2,
+      build: async (snapshot, attempt) => {
+        const history = effectiveHistoryAfterLatestCompaction(snapshot.items)
+          .filter((item) => item.kind !== 'error')
+        let result = this.deps.compactor.compact({
           threadId: input.threadId,
           turnId,
-          model,
-          ...(compactionModel.providerId ? { providerId: compactionModel.providerId } : {}),
-          modelClient: this.deps.model,
+          history,
           prefix,
-          contextCompaction: this.deps.contextCompaction,
-          items: history,
-          heuristicSummary: result.summaryItem.kind === 'compaction' ? result.summaryItem.summary : '',
-          signal: input.signal ?? new AbortController().signal,
-          recordUsage: async (usageSnapshot) => {
-            const usage = this.deps.usage?.record(input.threadId, usageSnapshot) ?? usageSnapshot
-            await this.deps.events.record({
-              kind: 'usage',
-              threadId: input.threadId,
-              turnId,
-              model,
-              usage
-            })
-          },
-          recordFallback: async (message) => {
-            await this.deps.events.record({
-              kind: 'error',
-              threadId: input.threadId,
-              turnId,
-              message,
-              code: 'compaction_summary_fallback',
-              severity: 'warning'
-            })
-          }
+          budgetTokens: input.request.budgetTokens,
+          reason: input.request.reason,
+          summaryItemId,
+          // Mark this as a user-requested (`/compact`) compaction so the GUI
+          // renders it as a manual rather than automatic compaction.
+          auto: false
         })
-        if (modelSummary) {
-          result = this.deps.compactor.compact({
+        if (result.replacedTokens === 0) {
+          return { changed: false, items: snapshot.items, value: result }
+        }
+        if (!started) {
+          started = true
+          // Keep the existing live lifecycle signal, but only persist the
+          // corresponding completion after a conditional history commit wins.
+          await this.deps.events.record({
+            kind: 'compaction_started',
             threadId: input.threadId,
             turnId,
-            history,
-            prefix,
-            budgetTokens: input.request.budgetTokens,
-            reason: input.request.reason,
-            auto: false,
-            summaryOverride: modelSummary,
-            summaryItemId: result.summaryItem.id
+            itemId: result.summaryItem.id,
+            auto: false
           })
         }
+        // A conflicting model-backed summary describes the old snapshot, so
+        // retry with the deterministic heuristic instead of reusing it (or
+        // issuing a second expensive summary request).
+        if (attempt === 1 && this.deps.contextCompaction?.summaryMode === 'model' && this.deps.model) {
+          const fallbackModel = modelForManualCompaction({
+            threadModel: thread.model,
+            defaultModel: this.deps.defaultModel,
+            clientModel: this.deps.model.model
+          })
+          const compactionModel = resolveCompactionModel({
+            contextCompaction: this.deps.contextCompaction,
+            fallbackModel
+          })
+          const model = compactionModel.model
+          const modelSummary = await summarizeCompactionWithModel({
+            threadId: input.threadId,
+            turnId,
+            model,
+            ...(compactionModel.providerId ? { providerId: compactionModel.providerId } : {}),
+            modelClient: this.deps.model,
+            prefix,
+            contextCompaction: this.deps.contextCompaction,
+            items: history,
+            heuristicSummary: result.summaryItem.kind === 'compaction' ? result.summaryItem.summary : '',
+            signal: input.signal ?? new AbortController().signal,
+            recordUsage: async (usageSnapshot) => {
+              const usage = this.deps.usage?.record(input.threadId, usageSnapshot) ?? usageSnapshot
+              await this.deps.events.record({
+                kind: 'usage',
+                threadId: input.threadId,
+                turnId,
+                model,
+                usage
+              })
+            },
+            recordFallback: async (message) => {
+              await this.deps.events.record({
+                kind: 'error',
+                threadId: input.threadId,
+                turnId,
+                message,
+                code: 'compaction_summary_fallback',
+                severity: 'warning'
+              })
+            }
+          })
+          if (modelSummary) {
+            result = this.deps.compactor.compact({
+              threadId: input.threadId,
+              turnId,
+              history,
+              prefix,
+              budgetTokens: input.request.budgetTokens,
+              reason: input.request.reason,
+              auto: false,
+              summaryOverride: modelSummary,
+              summaryItemId
+            })
+          }
+        }
+        return {
+          changed: true,
+          items: insertCompactionIntoVisibleHistory({
+            visibleItems: snapshot.items,
+            compactedItems: result.next,
+            summaryItem: result.summaryItem
+          }),
+          value: result
+        }
       }
-      const visibleItems = insertCompactionIntoVisibleHistory({
-        visibleItems: items,
-        compactedItems: result.next,
-        summaryItem: result.summaryItem
-      })
-      await this.deps.sessionStore.rewriteItems(input.threadId, visibleItems)
+    })
+    if (committed.status !== 'applied' && committed.status !== 'unchanged') {
+      // Preserve every newer append rather than making a stale compaction
+      // appear successful. The next request can compact a fresh snapshot.
+      return {
+        threadId: input.threadId,
+        replacedTokens: 0,
+        summary: '',
+        pinnedConstraints: prefix.pinnedConstraints
+      }
+    }
+    const result = committed.value
+    if (committed.status === 'applied') {
       await this.rewriteThreadItemsFromSession(input.threadId)
       await this.deps.events.record({
         kind: 'compaction_completed',

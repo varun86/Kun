@@ -50,6 +50,37 @@ class SummaryModel implements ModelClient {
   }
 }
 
+class BlockingSummaryModel implements ModelClient {
+  readonly provider = 'test'
+  readonly model = 'blocking-summary-model'
+  readonly requests: ModelRequest[] = []
+  readonly summaryStarted: Promise<void>
+  private readonly releaseSummary: Promise<void>
+  private resolveStarted!: () => void
+  private resolveRelease!: () => void
+
+  constructor() {
+    this.summaryStarted = new Promise<void>((resolve) => {
+      this.resolveStarted = resolve
+    })
+    this.releaseSummary = new Promise<void>((resolve) => {
+      this.resolveRelease = resolve
+    })
+  }
+
+  release(): void {
+    this.resolveRelease()
+  }
+
+  async *stream(request: ModelRequest): AsyncIterable<ModelStreamChunk> {
+    this.requests.push(request)
+    this.resolveStarted()
+    await this.releaseSummary
+    yield { kind: 'assistant_text_delta', text: 'Summary from the first snapshot.' }
+    yield { kind: 'completed', stopReason: 'stop' }
+  }
+}
+
 class FailOnceAppendSessionStore extends InMemorySessionStore {
   private failNextAppend = true
 
@@ -614,6 +645,102 @@ describe('TurnService compact', () => {
       summary: expect.stringContaining('MODEL SUMMARY kept the durable state.')
     })
     expect(runtimeEvents.some((event) => event.kind === 'usage' && event.model === 'thread-model')).toBe(true)
+  })
+
+  it('retries manual compaction after a summary-window append without losing history', async () => {
+    const sessionStore = new InMemorySessionStore()
+    const threadStore = new InMemoryThreadStore()
+    const eventBus = new InMemoryEventBus()
+    const nowIso = () => '2026-06-18T00:00:00.000Z'
+    const events = new RuntimeEventRecorder({
+      eventBus,
+      sessionStore,
+      allocateSeq: (threadId) => eventBus.allocateSeq(threadId),
+      nowIso
+    })
+    const model = new BlockingSummaryModel()
+    const prefix = createImmutablePrefix({
+      systemPrompt: 'System prompt used by both chat and compaction.',
+      pinnedConstraints: ['system: keep GUI HTTP/SSE stable']
+    })
+    const service = new TurnService({
+      threadStore,
+      sessionStore,
+      events,
+      inflight: new InflightTracker(),
+      steering: new SteeringQueue(),
+      compactor: new ContextCompactor(),
+      model,
+      usage: new UsageService(),
+      prefix,
+      defaultModel: 'default-model',
+      contextCompaction: { summaryMode: 'model', summaryTimeoutMs: 1_000 },
+      ids: new SequentialIdGenerator(),
+      nowIso
+    })
+    const threadId = 'thr_manual_compact_race'
+    const turnId = 'turn_1'
+    const seeds: TurnItem[] = [
+      makeUserItem({ id: 'item_1', threadId, turnId, text: 'Initial task: keep every item.' }),
+      makeAssistantTextItem({ id: 'item_2', threadId, turnId, text: 'Older result.', status: 'completed' }),
+      makeUserItem({ id: 'item_3', threadId, turnId, text: 'Recent clue.' }),
+      makeAssistantTextItem({ id: 'item_4', threadId, turnId, text: 'Recent answer.', status: 'completed' }),
+      makeUserItem({ id: 'item_5', threadId, turnId, text: 'Newest prompt.' }),
+      makeAssistantTextItem({ id: 'item_6', threadId, turnId, text: 'Newest answer.', status: 'completed' })
+    ]
+    let turn = createTurnRecord({
+      id: turnId,
+      threadId,
+      prompt: 'Initial task',
+      model: 'thread-model',
+      status: 'completed'
+    })
+    for (const item of seeds) {
+      turn = appendTurnItem(turn, item)
+      await sessionStore.appendItem(threadId, item)
+    }
+    await threadStore.upsert({
+      ...createThreadRecord({
+        id: threadId,
+        title: 'Manual compact race',
+        workspace: '/tmp/workspace',
+        model: 'thread-model'
+      }),
+      turns: [finishTurn(turn, 'completed')]
+    })
+
+    const compacting = service.compact({ threadId, request: { reason: 'race test' } })
+    await model.summaryStarted
+    await service.applyItem(threadId, makeAssistantTextItem({
+      id: 'item_late_manual_compaction',
+      threadId,
+      turnId,
+      text: 'this summary-window append must survive',
+      status: 'completed'
+    }))
+    model.release()
+    await expect(compacting).resolves.toMatchObject({ threadId })
+
+    const sessionItems = await sessionStore.loadItems(threadId)
+    for (const id of [...seeds.map((item) => item.id), 'item_late_manual_compaction']) {
+      expect(sessionItems.filter((item) => item.id === id)).toHaveLength(1)
+    }
+    const summaries = sessionItems.filter((item) => item.kind === 'compaction')
+    expect(summaries).toHaveLength(1)
+    const runtimeEvents = await sessionStore.loadEventsSince(threadId, 0)
+    const completed = runtimeEvents.filter((event) => event.kind === 'compaction_completed')
+    expect(completed).toHaveLength(1)
+    expect(completed[0]?.itemId).toBe(summaries[0]?.id)
+    expect(completed[0]?.kind === 'compaction_completed' ? completed[0].auto : undefined).toBe(false)
+
+    const threadItems = (await threadStore.get(threadId))?.turns.flatMap((candidate) => candidate.items) ?? []
+    expect([...threadItems.map((item) => item.id)].sort()).toEqual(
+      [...sessionItems.map((item) => item.id)].sort()
+    )
+    const sessionById = new Map(sessionItems.map((item) => [item.id, item]))
+    for (const threadItem of threadItems) {
+      expect(threadItem).toEqual(sessionById.get(threadItem.id))
+    }
   })
 })
 
