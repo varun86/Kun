@@ -28,6 +28,12 @@ import type { RuntimeErrorSeverity } from '../contracts/errors.js'
 import type { IdGenerator } from '../ports/id-generator.js'
 import type { ImmutablePrefix } from '../cache/immutable-prefix.js'
 import type { CacheRequestSignature } from '../cache/cache-diagnostics.js'
+import type {
+  ModelRoundOutcome,
+  ToolDispatchInput,
+  ToolDispatchOutcome,
+  TurnExecutionStatus
+} from './turn-execution-types.js'
 import { ContextCompactor } from './context-compactor.js'
 import {
   DESIGN_MODE_INSTRUCTION,
@@ -545,7 +551,7 @@ export class AgentLoop {
    * (completed, failed, or aborted). All errors are caught and
    * surfaced through the `error` runtime event.
    */
-  async runTurn(threadId: string, turnId: string): Promise<'completed' | 'failed' | 'aborted'> {
+  async runTurn(threadId: string, turnId: string): Promise<TurnExecutionStatus> {
     const signal = this.opts.turns.getAbortController(turnId)
     if (!signal) {
       await this.failTurn(threadId, turnId, 'no abort controller for turn')
@@ -1126,7 +1132,7 @@ export class AgentLoop {
     threadId: string,
     turnId: string,
     signal: AbortSignal
-  ): Promise<'completed' | 'failed' | 'aborted'> {
+  ): Promise<TurnExecutionStatus> {
     const limits = normalizeTurnLimits(this.opts.turnLimits)
     const startedAt = this.opts.nowMs?.() ?? Date.now()
     for (let step = 0; ; step += 1) {
@@ -1162,7 +1168,7 @@ export class AgentLoop {
     signal: AbortSignal,
     stepIndex = 0,
     maxToolCallsPerStep = normalizeTurnLimits(this.opts.turnLimits).maxToolCallsPerStep
-  ): Promise<'continue' | 'stop' | 'failed' | 'aborted'> {
+  ): Promise<ModelRoundOutcome> {
     if (shouldVerifyImmutablePrefix()) {
       verifyImmutablePrefix(this.opts.prefix)
     }
@@ -2139,27 +2145,7 @@ export class AgentLoop {
     return 'continue'
   }
 
-  private async dispatchToolCalls(input: {
-    calls: ToolCallLike[]
-    threadId: string
-    turnId: string
-    workspace: string
-    threadMode?: 'agent' | 'plan'
-    activePlanContext?: GuiPlanContext
-    guiDesignCanvas?: boolean
-    guiDesignMode?: boolean
-    guiDesignArtifact?: GuiDesignArtifactContext
-    modelProviderId?: string
-    modelCapabilities: ModelCapabilityMetadata
-    activeSkillIds: readonly string[]
-    allowedToolNames?: readonly string[]
-    userInputDisabled?: boolean
-    imContext?: boolean
-    toolProviderKinds: ReadonlyMap<string, ToolProviderKind | undefined>
-    approvalPolicy: ToolHostContext['approvalPolicy']
-    sandboxMode: NonNullable<ToolHostContext['sandboxMode']>
-    signal: AbortSignal
-  }): Promise<'continue' | 'aborted' | 'all_suppressed'> {
+  private async dispatchToolCalls(input: ToolDispatchInput): Promise<ToolDispatchOutcome> {
     const context = this.createToolContext(input)
     let index = 0
     let executedAny = false
