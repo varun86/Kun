@@ -43,6 +43,7 @@ import {
   CompatRequestCodecs,
   type CompatChatMessage
 } from './compat-request-codecs.js'
+import { decodeChatCompletionsStreamPayload } from './chat-completions-stream-decoder.js'
 
 export { redactUrlForLog } from './compat-http-diagnostics.js'
 
@@ -1085,73 +1086,15 @@ export class CompatModelClient implements ModelClient {
         budget
       )
     }
-    const chunks: ModelStreamChunk[] = []
-    let sawText = sawTextDelta
-    let finishReason: string | null = null
-    let usage: UsageSnapshot | null = null
-    const choice = (payload.choices as Record<string, unknown>[] | undefined)?.[0]
-    if (choice && typeof choice === 'object') {
-      const delta = choice.delta as Record<string, unknown> | undefined
-      if (delta && typeof delta === 'object') {
-        const content = delta.content
-        if (typeof content === 'string' && content.length > 0) {
-          sawText = true
-          chunks.push({ kind: 'assistant_text_delta', text: content })
-        }
-        const reasoningContent = delta.reasoning_content ?? delta.reasoning
-        if (typeof reasoningContent === 'string' && reasoningContent.length > 0) {
-          chunks.push({ kind: 'assistant_reasoning_delta', text: reasoningContent })
-        }
-        const toolCalls = delta.tool_calls as
-          | {
-              index?: number
-              id?: string
-              function?: { name?: string; arguments?: string }
-            }[]
-          | undefined
-        if (Array.isArray(toolCalls)) {
-          for (const call of toolCalls) {
-            const id = resolveToolCallDeltaId(call, pendingArguments)
-            const resolvedIndex = numericIndex(call.index)
-            const existing = budget.pendingCall(pendingArguments, id, resolvedIndex)
-            if (call.function?.name) existing.name = call.function.name
-            if (typeof call.function?.arguments === 'string') {
-              budget.appendArguments(existing, call.function.arguments)
-              chunks.push({
-                kind: 'tool_call_delta',
-                callId: id,
-                toolName: existing.name,
-                argumentsDelta: call.function.arguments
-              })
-            }
-          }
-        }
-      }
-      if (typeof choice.finish_reason === 'string') {
-        finishReason = choice.finish_reason
-      }
-    }
-    const usagePayload = payload.usage as Record<string, unknown> | undefined
-    if (usagePayload) {
-      usage = this.mapUsage(usagePayload, model)
-    }
-    if (finishReason === 'tool_calls' && pendingArguments.size > 0) {
-      for (const [callId, value] of pendingArguments) {
-        if (!value.name) continue
-        const argumentsRaw = budget.pendingArguments(value)
-        budget.completeToolCall(argumentsRaw)
-        const args = this.parseToolArguments(argumentsRaw || '{}')
-        chunks.push({
-          kind: 'tool_call_complete',
-          callId,
-          toolName: value.name,
-          arguments: args
-        })
-      }
-      budget.clearPendingCalls(pendingArguments)
-      pendingByIndex.clear()
-    }
-    return { chunks, sawTextDelta: sawText, finishReason, usage }
+    return decodeChatCompletionsStreamPayload({
+      payload,
+      pendingArguments,
+      pendingByIndex,
+      sawTextDelta,
+      budget,
+      normalizeUsage: (usage) => this.mapUsage(usage, model),
+      parseToolArguments: (raw) => this.parseToolArguments(raw)
+    })
   }
 
   private consumeResponsesStreamPayload(
@@ -2566,35 +2509,6 @@ function canonicalize(value: unknown): unknown {
   return out
 }
 
-function resolveToolCallDeltaId(
-  call: { index?: number; id?: string },
-  pending: Map<string, PendingToolCall>
-): string {
-  const index = numericIndex(call.index)
-  const existingByIndex = findPendingToolCallIdByIndex(pending, index)
-  if (call.id) {
-    if (existingByIndex && existingByIndex !== call.id) {
-      const existing = pending.get(existingByIndex)
-      if (existing) {
-        pending.delete(existingByIndex)
-        pending.set(call.id, existing)
-      }
-    }
-    return call.id
-  }
-  return existingByIndex ?? `call_${pending.size + 1}`
-}
-
-function findPendingToolCallIdByIndex(
-  pending: Map<string, PendingToolCall>,
-  index: number | undefined
-): string | undefined {
-  if (index === undefined) return undefined
-  for (const [callId, value] of pending) {
-    if (value.index === index) return callId
-  }
-  return undefined
-}
 
 function numericIndex(index: unknown): number | undefined {
   return typeof index === 'number' && Number.isInteger(index) && index >= 0

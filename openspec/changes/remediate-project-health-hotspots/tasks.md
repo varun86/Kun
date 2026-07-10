@@ -27,7 +27,7 @@
 - [x] 3.1 Capture representative Chat Completions, Responses, and Anthropic Messages
   request/header/stream/usage transcripts.
 - [x] 3.2 Extract shared stream resource budgeting and tool-call aggregation.
-- [ ] 3.3 Extract Chat Completions request codec and stream decoder.
+- [x] 3.3 Extract Chat Completions request codec and stream decoder.
 - [ ] 3.4 Extract Responses request codec and stream decoder.
 - [ ] 3.5 Extract Anthropic Messages request codec and stream decoder.
 - [x] 3.6 Extract shared usage normalization, retry classification, and diagnostics.
