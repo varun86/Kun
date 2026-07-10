@@ -1,4 +1,7 @@
-import { describe, expect, test, vi } from 'vitest'
+import { mkdtemp, mkdir, rm, symlink } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, test, vi } from 'vitest'
 import {
   AgentSdkRuntime,
   decideSdkBuiltinSandbox,
@@ -106,6 +109,12 @@ const STREAM: SdkMessage[] = [
 ]
 
 describe('AgentSdkRuntime.runTurn', () => {
+  const cleanup: string[] = []
+
+  afterEach(async () => {
+    await Promise.all(cleanup.splice(0).map((path) => rm(path, { recursive: true, force: true })))
+  })
+
   test('decideSdkBuiltinSandbox limits SDK reads to the workspace in workspace-write mode', () => {
     expect(decideSdkBuiltinSandbox('Read', { file_path: '/tmp/outside.txt' }, {
       workspace: '/ws',
@@ -118,6 +127,33 @@ describe('AgentSdkRuntime.runTurn', () => {
       workspace: '/ws',
       sandboxMode: 'workspace-write'
     })).toBeNull()
+  })
+
+  test('denies an SDK file operation that escapes through a workspace symlink', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kun-sdk-sandbox-'))
+    cleanup.push(root)
+    const workspace = join(root, 'workspace')
+    const outside = join(root, 'outside')
+    await Promise.all([mkdir(workspace), mkdir(outside)])
+    await symlink(outside, join(workspace, 'escape'))
+
+    expect(decideSdkBuiltinSandbox('Write', { file_path: join(workspace, 'escape', 'owned.txt') }, {
+      workspace,
+      sandboxMode: 'workspace-write'
+    })).toMatchObject({
+      allow: false,
+      message: expect.stringContaining('limited to the workspace sandbox')
+    })
+  })
+
+  test('denies unknown SDK tools even in danger-full-access mode', () => {
+    expect(decideSdkBuiltinSandbox('FutureWriteTool', {}, {
+      workspace: '/ws',
+      sandboxMode: 'danger-full-access'
+    })).toMatchObject({
+      allow: false,
+      message: expect.stringContaining('SDK tool allowlist')
+    })
   })
 
   test('drives the SDK stream into kun events/items and completes the turn', async () => {

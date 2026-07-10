@@ -9,7 +9,8 @@
  * fully unit-testable with a fake SDK + fake deps. The concrete binding to kun's
  * real services lives in the runtime factory (a thin adapter).
  */
-import { isAbsolute, relative, resolve, sep } from 'node:path'
+import { existsSync, realpathSync } from 'node:fs'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { RuntimeEventDraft } from '../../services/runtime-event-recorder.js'
 import type { TurnItem } from '../../contracts/items.js'
 import type { ApprovalPolicy, SandboxMode } from '../../contracts/policy.js'
@@ -256,6 +257,8 @@ export class AgentSdkRuntime {
 const SDK_COMMAND_TOOLS = new Set(['Bash'])
 const SDK_WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit'])
 const SDK_READ_PATH_TOOLS = new Set(['Read', 'Glob', 'Grep', 'NotebookRead'])
+const SDK_NON_PATH_TOOLS = new Set(['WebSearch', 'WebFetch', 'TodoWrite'])
+const KUN_BRIDGED_TOOL_PREFIX = 'mcp__kun__'
 
 export function decideSdkBuiltinSandbox(
   toolName: string,
@@ -263,6 +266,9 @@ export function decideSdkBuiltinSandbox(
   context: Pick<SdkTurnContext, 'workspace' | 'sandboxMode'>
 ): ToolApprovalDecision | null {
   const mode = context.sandboxMode ?? 'danger-full-access'
+  if (!isKnownSdkTool(toolName)) {
+    return denySandbox(`tool ${toolName} is blocked because it is not in kun's SDK tool allowlist`)
+  }
   if (mode === 'danger-full-access') return null
 
   if (SDK_COMMAND_TOOLS.has(toolName)) {
@@ -298,6 +304,14 @@ function denySandbox(message: string): ToolApprovalDecision {
   return { allow: false, message }
 }
 
+function isKnownSdkTool(toolName: string): boolean {
+  return SDK_COMMAND_TOOLS.has(toolName) ||
+    SDK_WRITE_TOOLS.has(toolName) ||
+    SDK_READ_PATH_TOOLS.has(toolName) ||
+    SDK_NON_PATH_TOOLS.has(toolName) ||
+    toolName.startsWith(KUN_BRIDGED_TOOL_PREFIX)
+}
+
 function sdkInputPath(input: Record<string, unknown>): string {
   for (const key of ['file_path', 'path', 'notebook_path']) {
     const value = input[key]
@@ -307,12 +321,49 @@ function sdkInputPath(input: Record<string, unknown>): string {
 }
 
 function isPathInsideWorkspace(inputPath: string, workspace: string): boolean {
-  const root = workspace.trim()
-    ? isAbsolute(workspace)
-      ? resolve(workspace)
-      : resolve(process.cwd(), workspace)
-    : process.cwd()
-  const candidate = isAbsolute(inputPath) ? resolve(inputPath) : resolve(root, inputPath)
+  const configuredRoot = workspace.trim()
+  if (!configuredRoot) return false
+
+  try {
+    const lexicalRoot = isAbsolute(configuredRoot)
+      ? resolve(configuredRoot)
+      : resolve(process.cwd(), configuredRoot)
+    const lexicalCandidate = isAbsolute(inputPath) ? resolve(inputPath) : resolve(lexicalRoot, inputPath)
+    if (!isDescendantOrSame(lexicalRoot, lexicalCandidate)) return false
+
+    // A missing cwd will be rejected by the SDK before any tool executes. Keep
+    // the lexical check for that invalid configuration, while requiring real
+    // filesystem containment whenever the workspace exists.
+    if (!existsSync(lexicalRoot)) return true
+
+    const root = realpathSync(lexicalRoot)
+    const candidate = isAbsolute(inputPath) ? resolve(inputPath) : resolve(root, inputPath)
+    if (!isDescendantOrSame(root, candidate)) return false
+
+    // `resolve` only proves lexical containment. Resolve the deepest existing
+    // parent too, so `/workspace/link/outside.txt` cannot escape through a
+    // symlink when the final file does not exist yet.
+    const existingParent = deepestExistingParent(candidate)
+    return existingParent !== null && isDescendantOrSame(root, existingParent)
+  } catch {
+    return false
+  }
+}
+
+function deepestExistingParent(path: string): string | null {
+  let probe = path
+  const missing: string[] = []
+  while (!existsSync(probe)) {
+    const parent = dirname(probe)
+    if (parent === probe) return null
+    missing.unshift(basename(probe))
+    probe = parent
+  }
+  const realParent = realpathSync(probe)
+  return missing.length > 0 ? join(realParent, ...missing) : realParent
+}
+
+function isDescendantOrSame(root: string, candidate: string): boolean {
   const rel = relative(root, candidate)
   return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
 }
