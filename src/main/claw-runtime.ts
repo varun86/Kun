@@ -82,6 +82,7 @@ import {
 } from './claw-conversation-registry'
 import { authorizeImGeneratedFiles, deliverImGeneratedFiles } from './im-attachment-pipeline'
 import { FeishuTransportAdapter } from './feishu-transport-adapter'
+import { WeixinTransportAdapter } from './weixin-transport-adapter'
 
 const CLAW_TELEGRAM_INBOUND_IMAGE_HEADING = '[Telegram inbound message]'
 
@@ -119,68 +120,6 @@ function buildImRuntimePrompt(prompt: string): string {
   ].join('\n')
 }
 
-function fallbackWeixinRemoteSession(
-  payload: Record<string, unknown>,
-  senderLabel: string
-): IncomingRemoteSession | null {
-  const message = nestedRecord(payload.message)
-  const data = nestedRecord(payload.data)
-  const chatId = asString(
-    payload.chatId ||
-    payload.chat_id ||
-    payload.open_chat_id ||
-    payload.from ||
-    payload.conversationId ||
-    payload.conversation_id ||
-    message.chatId ||
-    message.chat_id ||
-    message.from ||
-    message.sender ||
-    data.chatId ||
-    data.chat_id ||
-    data.from ||
-    data.sender ||
-    senderLabel
-  )
-  if (!chatId || chatId === 'webhook' || chatId === 'WeChat') return null
-  const messageId = asString(
-    payload.messageId ||
-    payload.message_id ||
-    message.messageId ||
-    message.message_id ||
-    data.messageId ||
-    data.message_id
-  ) || `wx_${randomUUID()}`
-  const threadId = asString(
-    payload.threadId ||
-    payload.thread_id ||
-    message.threadId ||
-    message.thread_id ||
-    data.threadId ||
-    data.thread_id
-  )
-  const senderId = asString(
-    payload.senderId ||
-    payload.sender_id ||
-    message.senderId ||
-    message.sender_id ||
-    message.sender ||
-    data.senderId ||
-    data.sender_id ||
-    data.sender
-  ) || chatId
-  const senderName = asString(
-    payload.senderName ||
-    payload.sender_name ||
-    message.senderName ||
-    message.sender_name ||
-    message.sender ||
-    data.senderName ||
-    data.sender_name ||
-    data.sender
-  ) || chatId
-  return { chatId, messageId, threadId, senderId, senderName }
-}
 
 function isChineseLocale(settings: AppSettingsV1): boolean {
   return settings.locale.toLowerCase().startsWith('zh')
@@ -897,6 +836,7 @@ export class ClawRuntime {
   private server: Server | null = null
   private serverKey = ''
   private readonly feishuTransport: FeishuTransportAdapter
+  private readonly weixinTransport: WeixinTransportAdapter
   /** Channels with an in-flight first-message welcome delivery. */
   private readonly welcomeInFlight = new Set<string>()
   /** WeChat channels already greeted (or attempted) at connect time this run. */
@@ -914,6 +854,11 @@ export class ClawRuntime {
         settings.claw.im.workspaceRoot,
         settings.workspaceRoot
       ]
+    })
+    this.weixinTransport = new WeixinTransportAdapter({
+      send: deps.sendWeixinBridgeMessage,
+      resolveAccountUserId: deps.resolveWeixinAccountUserId,
+      logError: deps.logError
     })
   }
 
@@ -947,7 +892,6 @@ export class ClawRuntime {
    */
   private async syncWeixinConnectWelcomes(settings: AppSettingsV1): Promise<void> {
     if (!settings.claw.enabled || !settings.claw.im.enabled) return
-    if (!this.deps.sendWeixinBridgeMessage || !this.deps.resolveWeixinAccountUserId) return
     for (const channel of settings.claw.channels) {
       if (!channel.enabled || channel.provider !== 'weixin' || channel.welcomeSentAt) continue
       const credential = channel.platformCredential
@@ -956,20 +900,16 @@ export class ClawRuntime {
       this.weixinConnectWelcomeAttempted.add(channel.id)
       this.welcomeInFlight.add(channel.id)
       try {
-        const owner = (await this.deps.resolveWeixinAccountUserId(credential.accountId)).trim()
+        const owner = await this.weixinTransport.resolveOwner(channel)
         if (!owner) continue
-        const result = await this.deps.sendWeixinBridgeMessage({
-          accountId: credential.accountId,
-          to: owner,
-          text: imWelcomeText(settings, channel)
+        const result = await this.weixinTransport.sendText({
+          channel,
+          remoteSession: { chatId: owner },
+          text: imWelcomeText(settings, channel),
+          failureMessage: 'Failed to greet the WeChat owner after connect; the welcome will be sent on the first inbound message instead.'
         })
         if (result.ok) {
           await this.markChannelWelcomeSent(channel.id)
-        } else {
-          this.deps.logError('claw-weixin', 'Failed to greet the WeChat owner after connect; the welcome will be sent on the first inbound message instead.', {
-            channelId: channel.id,
-            message: result.message
-          })
         }
       } catch (error) {
         this.deps.logError('claw-weixin', 'Failed to greet the WeChat owner after connect', {
@@ -1011,22 +951,13 @@ export class ClawRuntime {
     remoteSession: Pick<ClawImRemoteSessionV1, 'chatId' | 'messageId' | 'threadId' | 'senderId' | 'senderName'> | undefined,
     text: string
   ): Promise<boolean> {
-    if (channel.provider !== 'weixin' || !this.deps.sendWeixinBridgeMessage) return false
-    const credential = channel.platformCredential
-    if (credential?.kind !== 'weixin' || !credential.accountId.trim()) return false
-    const to = remoteSession?.chatId.trim() || channel.remoteSession?.chatId.trim() || ''
-    if (!to) return false
-    const result = await this.deps.sendWeixinBridgeMessage({
-      accountId: credential.accountId,
-      to,
-      text
+    if (channel.provider !== 'weixin') return false
+    const result = await this.weixinTransport.sendText({
+      channel,
+      remoteSession,
+      text,
+      failureMessage: 'Failed to push the WeChat welcome message; prepending it to the reply instead.'
     })
-    if (!result.ok) {
-      this.deps.logError('claw-weixin', 'Failed to push the WeChat welcome message; prepending it to the reply instead.', {
-        channelId: channel.id,
-        message: result.message
-      })
-    }
     return result.ok
   }
 
@@ -1351,7 +1282,7 @@ export class ClawRuntime {
     const { channel, turnId } = input
     if (!channel || !turnId) return
     const canPush =
-      (channel.provider === 'weixin' && Boolean(this.deps.sendWeixinBridgeMessage)) ||
+      (channel.provider === 'weixin' && this.weixinTransport.canSend(channel)) ||
       (channel.provider === 'feishu' && this.feishuTransport.has(channel.id)) ||
       (channel.provider === 'telegram' && Boolean(this.deps.telegramRuntime?.has(channel.id)))
     if (!canPush) return
@@ -1421,20 +1352,13 @@ export class ClawRuntime {
     const to = remoteSession?.chatId.trim() || channel.remoteSession?.chatId.trim() || ''
     if (!to) return
     if (channel.provider === 'weixin') {
-      const credential = channel.platformCredential
-      if (credential?.kind !== 'weixin' || !credential.accountId.trim() || !this.deps.sendWeixinBridgeMessage) return
-      const result = await this.deps.sendWeixinBridgeMessage({
-        accountId: credential.accountId,
-        to,
-        files: files.map((file) => ({ path: file.path, fileName: file.fileName }))
+      await this.weixinTransport.sendFiles({
+        channel,
+        remoteSession,
+        files,
+        failureMessage: 'Failed to push delayed generated files over the WeChat bridge.',
+        context
       })
-      if (!result.ok) {
-        this.deps.logError('claw-weixin', 'Failed to push delayed generated files over the WeChat bridge.', {
-          ...context,
-          channelId: channel.id,
-          message: result.message
-        })
-      }
       return
     }
     if (channel.provider === 'feishu') {
@@ -1473,17 +1397,12 @@ export class ClawRuntime {
     text: string
   ): Promise<void> {
     if (channel.provider === 'weixin') {
-      const credential = channel.platformCredential
-      if (credential?.kind !== 'weixin' || !credential.accountId.trim() || !this.deps.sendWeixinBridgeMessage) return
-      const to = remoteSession?.chatId.trim() || channel.remoteSession?.chatId.trim() || ''
-      if (!to) return
-      const result = await this.deps.sendWeixinBridgeMessage({ accountId: credential.accountId, to, text })
-      if (!result.ok) {
-        this.deps.logError('claw-weixin', 'Failed to push delayed result over the WeChat bridge.', {
-          channelId: channel.id,
-          message: result.message
-        })
-      }
+      await this.weixinTransport.sendText({
+        channel,
+        remoteSession,
+        text,
+        failureMessage: 'Failed to push delayed result over the WeChat bridge.'
+      })
       return
     }
     if (channel.provider === 'feishu') {
@@ -2250,29 +2169,7 @@ export class ClawRuntime {
     text: string,
     direction: 'user' | 'assistant'
   ): Promise<{ ok: true } | { ok: false; message: string }> {
-    const credential = channel.platformCredential
-    if (credential?.kind !== 'weixin' || !credential.accountId.trim()) {
-      return { ok: false, message: 'No target WeChat account is available yet.' }
-    }
-    const to = conversation?.chatId.trim() || channel.remoteSession?.chatId.trim() || ''
-    if (!to) return { ok: false, message: 'No target WeChat conversation is available yet.' }
-    if (!this.deps.sendWeixinBridgeMessage) {
-      return { ok: false, message: 'Built-in WeChat bridge is not initialized.' }
-    }
-    const result = await this.deps.sendWeixinBridgeMessage({
-      accountId: credential.accountId,
-      to,
-      text
-    })
-    if (result.ok) return { ok: true }
-    this.deps.logError('claw-weixin', 'Failed to mirror Claw message to WeChat', {
-      message: result.message,
-      threadId,
-      direction,
-      channelId: channel.id,
-      to
-    })
-    return result
+    return this.weixinTransport.mirror({ channel, conversation, threadId, text, direction })
   }
 
   async mirrorThreadMessageToIm(
@@ -3068,7 +2965,7 @@ export class ClawRuntime {
             (item) => item.enabled && item.provider === provider
           )
       const remoteSession = extractIncomingRemoteSession(payload) ??
-        (provider === 'weixin' ? fallbackWeixinRemoteSession(payload, sender) : null)
+        (provider === 'weixin' ? this.weixinTransport.legacyRemoteSession(payload, sender) : null)
       if (provider === 'feishu' && channel) {
         if (remoteSession) {
           await this.rememberFeishuRemoteSession(settings, channel, remoteSession)
