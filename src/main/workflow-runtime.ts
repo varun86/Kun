@@ -47,6 +47,7 @@ import { resolveCodexOAuthApiKey } from './codex-auth'
 import { createWorkflowExecutionPlan, selectWorkflowTrigger } from './workflow-graph-planner'
 import { WorkflowRunCoordinator } from './workflow-run-coordinator'
 import { WorkflowScheduler } from './workflow-scheduler'
+import { createWorkflowNodeExecutorRegistry } from './workflow-node-executor-registry'
 
 const MAX_NODE_EXECUTIONS = 200
 const MAX_RUN_DURATION_MS = 30 * 60_000
@@ -931,6 +932,8 @@ export class WorkflowRuntime {
   private readonly deps: ScheduleRuntimeDeps
   private readonly runCoordinator = new WorkflowRunCoordinator()
   private readonly scheduler: WorkflowScheduler
+  private readonly nodeExecutors = createWorkflowNodeExecutorRegistry<NodeOutcome>()
+  private workflowUpdateTail: Promise<void> = Promise.resolve()
   /** Recursion guard: true while a hook-triggered workflow is running, so its own
    * tool calls (via AI-agent nodes) don't re-trigger hooks and loop forever. */
   private hookRunActive = false
@@ -1403,17 +1406,21 @@ export class WorkflowRuntime {
     this.syncPowerSaveBlocker(saved)
   }
 
-  private async updateWorkflow(
+  private updateWorkflow(
     workflowId: string,
     updater: (workflow: WorkflowV1) => WorkflowV1
   ): Promise<AppSettingsV1> {
-    const settings = await this.deps.store.load()
-    const workflows = settings.workflow.workflows.map((workflow) =>
-      workflow.id === workflowId ? updater(workflow) : workflow
-    )
-    const saved = await this.deps.store.patch({ workflow: { ...settings.workflow, workflows } })
-    this.syncPowerSaveBlocker(saved)
-    return saved
+    const update = this.workflowUpdateTail.then(async () => {
+      const settings = await this.deps.store.load()
+      const workflows = settings.workflow.workflows.map((workflow) =>
+        workflow.id === workflowId ? updater(workflow) : workflow
+      )
+      const saved = await this.deps.store.patch({ workflow: { ...settings.workflow, workflows } })
+      this.syncPowerSaveBlocker(saved)
+      return saved
+    })
+    this.workflowUpdateTail = update.then(() => undefined, () => undefined)
+    return update
   }
 
   private setLive(workflowId: string, nodeId: string, status: WorkflowNodeRunStatus): void {
@@ -1768,6 +1775,32 @@ export class WorkflowRuntime {
     runWorkspace = '',
     scope: InterpScope = {},
     runVars: Record<string, unknown> = {},
+    runRef?: { workflowId: string; runId: string }
+  ): Promise<NodeOutcome> {
+    return this.nodeExecutors.execute(node, {
+      executeAdapter: (registeredNode) => this.executeNodeAdapter(
+        registeredNode,
+        payload,
+        settings,
+        inputs,
+        depth,
+        runWorkspace,
+        scope,
+        runVars,
+        runRef
+      )
+    })
+  }
+
+  private async executeNodeAdapter(
+    node: WorkflowNodeV1,
+    payload: WorkflowPayload,
+    settings: AppSettingsV1,
+    inputs: WorkflowPayload[],
+    depth: number,
+    runWorkspace: string,
+    scope: InterpScope,
+    runVars: Record<string, unknown>,
     runRef?: { workflowId: string; runId: string }
   ): Promise<NodeOutcome> {
     switch (node.type) {
