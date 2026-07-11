@@ -76,7 +76,7 @@
   legacy threads, backfill, archive/search, and usage recovery.
 - [ ] 7.2 Extract thread index repository and query/summary mapping.
 - [ ] 7.3 Extract thread document/legacy readers and recovery precedence.
-- [ ] 7.4 Extract thread projection assembler and turn/item merge rules.
+- [x] 7.4 Extract thread projection assembler and turn/item merge rules.
 - [ ] 7.5 Extract backfill coordination and lifecycle/error reporting.
 - [ ] 7.6 Reduce `HybridThreadStore` to the `ThreadStore` facade and prove persisted
   schema and files remain unchanged.
