@@ -6,6 +6,7 @@
  */
 
 import type { KunRuntimeStatusPayload } from '../shared/kun-gui-api'
+import { ManagedRuntimeOperationCoordinator } from './runtime/managed-runtime-operation-coordinator'
 
 /** Shared with preload/renderer; the payload travels over `runtime:status`. */
 export type KunRuntimeStatus = KunRuntimeStatusPayload
@@ -82,7 +83,6 @@ export type KunRuntimeSupervisorDeps<Settings> = {
   restartRuntime: (settings: Settings) => Promise<void>
   checkHealth: (settings: Settings, timeoutMs: number) => Promise<boolean>
   isChildRunning: () => boolean
-  isOperationPending: () => boolean
   isStopped: () => boolean
   publish: (status: KunRuntimeStatus) => void
   warn: (source: string, message: string, details?: unknown) => void
@@ -94,6 +94,7 @@ export type KunRuntimeSupervisorDeps<Settings> = {
 
 /** Single owner for crash recovery, liveness monitoring, and runtime status. */
 export class KunRuntimeSupervisor<Settings> {
+  private readonly operations = new ManagedRuntimeOperationCoordinator<Settings>()
   private readonly restartBudget: RestartBudget
   private readonly watchdogIntervalMs: number
   private readonly watchdogFailureThreshold: number
@@ -118,6 +119,38 @@ export class KunRuntimeSupervisor<Settings> {
 
   get lastStatus(): KunRuntimeStatus | null {
     return this.currentStatus
+  }
+
+  hasPendingOperation(): boolean {
+    return this.operations.hasPendingOperation()
+  }
+
+  latestOr(fallback: Settings): Settings {
+    return this.operations.latestOr(fallback)
+  }
+
+  noteLatest(settings: Settings): void {
+    this.operations.noteLatest(settings)
+  }
+
+  waitForRestart(): Promise<boolean> {
+    return this.operations.waitForRestart()
+  }
+
+  ensure(fingerprint: string, operation: () => Promise<Settings>): Promise<Settings> {
+    return this.operations.ensure(fingerprint, operation)
+  }
+
+  restart(operation: () => Promise<void>): Promise<void> {
+    return this.operations.restart(operation)
+  }
+
+  enqueueSettingsApply(operation: () => Promise<void>, onError: (error: unknown) => void): void {
+    this.operations.enqueueSettingsApply(operation, onError)
+  }
+
+  waitForSettingsApply(): Promise<void> {
+    return this.operations.waitForSettingsApply()
   }
 
   publish(status: Omit<KunRuntimeStatus, 'at'>): void {
@@ -166,7 +199,7 @@ export class KunRuntimeSupervisor<Settings> {
 
   async watchdogTick(): Promise<void> {
     if (this.watchdogTickInFlight || this.deps.isStopped()) return
-    if (this.crashRecoveryInFlight || this.deps.isOperationPending()) return
+    if (this.crashRecoveryInFlight || this.operations.hasPendingOperation()) return
     if (!this.deps.isChildRunning()) return
     this.watchdogTickInFlight = true
     try {

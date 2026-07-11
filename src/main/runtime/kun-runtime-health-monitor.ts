@@ -13,6 +13,70 @@ export type KunStartupHealthOptions = {
   probeHealth?: (port: number) => Promise<boolean>
 }
 
+export type KunRuntimeHealthProbeResult = { healthy: boolean; error: string }
+
+export type KunRuntimeHealthMonitorDeps<Settings> = {
+  runtimeBaseUrl: (settings: Settings) => string
+  runtimeHeaders: (settings: Settings) => HeadersInit
+  warn: (source: string, message: string) => void
+  fetch?: typeof fetch
+  sleep?: (ms: number) => Promise<void>
+}
+
+/** Owns post-start/runtime watchdog health polling and per-endpoint single-flight probes. */
+export class KunRuntimeHealthMonitor<Settings> {
+  private readonly inFlight = new Map<string, Promise<KunRuntimeHealthProbeResult>>()
+
+  constructor(private readonly deps: KunRuntimeHealthMonitorDeps<Settings>) {}
+
+  async waitForHealthy(settings: Settings, timeoutMs: number): Promise<boolean> {
+    const base = this.deps.runtimeBaseUrl(settings)
+    const deadline = Date.now() + timeoutMs
+    let lastError = ''
+    while (Date.now() <= deadline) {
+      const remaining = Math.max(1, deadline - Date.now())
+      const result = await this.probeOnce(settings, base, remaining)
+      if (result.healthy) return true
+      if (result.error !== lastError) {
+        lastError = result.error
+        this.deps.warn('health-probe', `${base}/health: ${result.error}`)
+      }
+      await (this.deps.sleep ?? sleep)(150)
+    }
+    this.deps.warn('health-probe', `gave up after ${timeoutMs}ms, last error: ${lastError}`)
+    return false
+  }
+
+  probeOnce(
+    settings: Settings,
+    base = this.deps.runtimeBaseUrl(settings),
+    remainingMs = 1_000
+  ): Promise<KunRuntimeHealthProbeResult> {
+    const existing = this.inFlight.get(base)
+    if (existing) return existing
+    let task: Promise<KunRuntimeHealthProbeResult>
+    task = (async () => {
+      try {
+        const response = await (this.deps.fetch ?? fetch)(`${base}/health`, {
+          headers: this.deps.runtimeHeaders(settings),
+          signal: AbortSignal.timeout(Math.max(250, Math.min(1_000, remainingMs)))
+        })
+        const healthy = response.ok && isKunHealthResponseBody(await response.text())
+        return { healthy, error: healthy ? '' : `unexpected status ${response.status}` }
+      } catch (error) {
+        return {
+          healthy: false,
+          error: error instanceof Error ? error.message : String(error)
+        }
+      }
+    })().finally(() => {
+      if (this.inFlight.get(base) === task) this.inFlight.delete(base)
+    })
+    this.inFlight.set(base, task)
+    return task
+  }
+}
+
 export function resolveKunStartupTimeoutMs(
   platform: NodeJS.Platform,
   env: NodeJS.ProcessEnv
@@ -168,4 +232,8 @@ export async function probeKunHealth(port: number, timeoutMs = 1_000): Promise<b
 function appendTail(current: string, nextChunk: string, maxChars: number): string {
   const combined = `${current}${nextChunk}`
   return combined.length > maxChars ? combined.slice(-maxChars) : combined
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }

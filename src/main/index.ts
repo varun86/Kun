@@ -113,12 +113,11 @@ import {
 } from './weixin-bridge-runtime'
 import { webhookUrl } from './claw-runtime-helpers'
 import { createTelegramRuntime, type TelegramRuntime, verifyTelegramBotToken } from './telegram-runtime'
-import { isKunHealthResponseBody } from './kun-health'
+import { KunRuntimeHealthMonitor } from './runtime/kun-runtime-health-monitor'
 import {
   buildManagedRuntimeHotApplyBody,
   classifyManagedRuntimeHotApplyResponse
 } from './runtime/kun-runtime-config-service'
-import { ManagedRuntimeOperationCoordinator } from './runtime/managed-runtime-operation-coordinator'
 import { ManagedRuntimeShutdownCoordinator } from './runtime/managed-runtime-shutdown-coordinator'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -715,58 +714,11 @@ async function probeThreadApi(settings: AppSettingsV1): Promise<
   }
 }
 
-async function waitForKunHealth(settings: AppSettingsV1, timeoutMs: number): Promise<boolean> {
-  const base = getRuntimeBaseUrlForSettings(settings)
-  const deadline = Date.now() + timeoutMs
-  let lastError = ''
-
-  while (Date.now() <= deadline) {
-    const remaining = Math.max(1, deadline - Date.now())
-    const result = await probeKunHealthOnce(settings, base, remaining)
-    if (result.healthy) return true
-    if (result.error !== lastError) {
-      lastError = result.error
-      logWarn('health-probe', `${base}/health: ${result.error}`)
-    }
-    await sleep(150)
-  }
-
-  logWarn('health-probe', `gave up after ${timeoutMs}ms, last error: ${lastError}`)
-  return false
-}
-
-type KunHealthProbeResult = { healthy: boolean; error: string }
-const kunHealthProbeInFlight = new Map<string, Promise<KunHealthProbeResult>>()
-
-function probeKunHealthOnce(
-  settings: AppSettingsV1,
-  base: string,
-  remainingMs: number
-): Promise<KunHealthProbeResult> {
-  const existing = kunHealthProbeInFlight.get(base)
-  if (existing) return existing
-
-  let task: Promise<KunHealthProbeResult>
-  task = (async () => {
-    try {
-      const res = await fetch(`${base}/health`, {
-        headers: runtimeAuthHeaders(settings),
-        signal: AbortSignal.timeout(Math.max(250, Math.min(1_000, remainingMs)))
-      })
-      const healthy = res.ok && isKunHealthResponseBody(await res.text())
-      return { healthy, error: healthy ? '' : `unexpected status ${res.status}` }
-    } catch (error) {
-      return {
-        healthy: false,
-        error: error instanceof Error ? error.message : String(error)
-      }
-    }
-  })().finally(() => {
-    if (kunHealthProbeInFlight.get(base) === task) kunHealthProbeInFlight.delete(base)
-  })
-  kunHealthProbeInFlight.set(base, task)
-  return task
-}
+const kunRuntimeHealthMonitor = new KunRuntimeHealthMonitor<AppSettingsV1>({
+  runtimeBaseUrl: getRuntimeBaseUrlForSettings,
+  runtimeHeaders: runtimeAuthHeaders,
+  warn: (source, message) => logWarn(source, message)
+})
 
 async function sleepWithAbort(ms: number, signal: AbortSignal): Promise<void> {
   if (signal.aborted || ms <= 0) return
@@ -784,8 +736,6 @@ async function sleepWithAbort(ms: number, signal: AbortSignal): Promise<void> {
   })
 }
 
-const runtimeOperations = new ManagedRuntimeOperationCoordinator<AppSettingsV1>()
-
 /**
  * How long a managed child that failed the initial health probe gets to prove
  * it is merely busy (e.g. a long synchronous step) rather than hung, before the
@@ -801,9 +751,8 @@ const runtimeSupervisor = new KunRuntimeSupervisor<AppSettingsV1>({
     ),
     ensureRuntime: (settings) => ensureRuntime(settings),
     restartRuntime: (settings) => restartRuntime(settings),
-    checkHealth: (settings, timeoutMs) => waitForKunHealth(settings, timeoutMs),
+    checkHealth: (settings, timeoutMs) => kunRuntimeHealthMonitor.waitForHealthy(settings, timeoutMs),
     isChildRunning: () => kunRuntimeAdapter.isChildRunning(),
-    isOperationPending: () => runtimeOperations.hasPendingOperation(),
     isStopped: () => runtimeShutdown.isStoppedForQuit || isAppQuitInProgress(),
     publish: (full) => {
       logWarn('runtime-status', `${full.state} (${full.source})${full.message ? `: ${full.message}` : ''}`)
@@ -841,14 +790,14 @@ function queueRuntimeSettingsApply(prev: AppSettingsV1, next: AppSettingsV1): vo
   // Always update the prev/next anchor so a later task diffs against
   // the settings that were actually applied last, not against the
   // original `prev` captured when this call was queued.
-  const anchor = runtimeOperations.latestOr(prev)
-  runtimeOperations.noteLatest(next)
+  const anchor = runtimeSupervisor.latestOr(prev)
+  runtimeSupervisor.noteLatest(next)
   const applyMode = runtimeSettingsApplyMode(anchor, next)
   if (applyMode === 'none') return
 
-  runtimeOperations.enqueueSettingsApply(
+  runtimeSupervisor.enqueueSettingsApply(
     async () => {
-      const current = runtimeOperations.latestOr(next)
+      const current = runtimeSupervisor.latestOr(next)
       const currentMode = runtimeSettingsApplyMode(anchor, current)
       if (currentMode === 'restart') {
         await restartManagedRuntimeForSettingsChange(anchor, current)
@@ -868,10 +817,10 @@ function queueRuntimeSettingsApply(prev: AppSettingsV1, next: AppSettingsV1): vo
 }
 
 function queueRuntimeMcpConfigApply(settings: AppSettingsV1): void {
-  runtimeOperations.noteLatest(settings)
-  runtimeOperations.enqueueSettingsApply(
+  runtimeSupervisor.noteLatest(settings)
+  runtimeSupervisor.enqueueSettingsApply(
     async () => {
-      const current = runtimeOperations.latestOr(settings)
+      const current = runtimeSupervisor.latestOr(settings)
       const result = await applyManagedRuntimeSettingsHot(current, 'mcp-config')
       if (result === 'restart_required') {
         await restartManagedRuntimeForMcpConfigChange(current)
@@ -886,7 +835,7 @@ function queueRuntimeMcpConfigApply(settings: AppSettingsV1): void {
 }
 
 async function waitForQueuedRuntimeSettingsApply(): Promise<void> {
-  await runtimeOperations.waitForSettingsApply()
+  await runtimeSupervisor.waitForSettingsApply()
 }
 
 /**
@@ -902,14 +851,14 @@ function runtimeFingerprint(settings: AppSettingsV1): string {
 
 async function ensureRuntime(settings: AppSettingsV1): Promise<AppSettingsV1> {
   try {
-    if (await runtimeOperations.waitForRestart()) {
+    if (await runtimeSupervisor.waitForRestart()) {
       return store.load()
     }
   } catch {
     /* fall through to a normal ensure so callers see the latest state */
   }
   const fingerprint = runtimeFingerprint(settings)
-  return runtimeOperations.ensure(fingerprint, () => ensureRuntimeOnce(settings))
+  return runtimeSupervisor.ensure(fingerprint, () => ensureRuntimeOnce(settings))
 }
 
 async function ensureRuntimeOnce(settings: AppSettingsV1): Promise<AppSettingsV1> {
@@ -928,7 +877,7 @@ async function resolveManagedKunLaunchSettings(
   if (!resolved.changed) return launchSettings
 
   const next = await store.patch({ agents: { kun: { port: resolved.port } } })
-  runtimeOperations.noteLatest(next)
+  runtimeSupervisor.noteLatest(next)
   logWarn(source, `Kun port ${runtime.port} is unavailable; using ${resolved.port} for the managed runtime`, {
     previousPort: runtime.port,
     port: resolved.port,
@@ -953,7 +902,7 @@ async function ensureManagedKunRuntimeToken(
   const next = await store.patch({
     agents: { kun: { runtimeToken: generateKunRuntimeToken() } }
   })
-  runtimeOperations.noteLatest(next)
+  runtimeSupervisor.noteLatest(next)
   logWarn(source, 'Generated a runtime token for the managed Kun runtime because none was configured.')
   return { settings: next, generated: true }
 }
@@ -969,7 +918,7 @@ async function ensureKunRuntime(settings: AppSettingsV1): Promise<AppSettingsV1>
   const runtime = getKunRuntimeSettings(currentSettings)
   const hasApiKey = Boolean(resolveConfiguredApiKey(currentSettings))
 
-  const healthy = await waitForKunHealth(currentSettings, 2_000)
+  const healthy = await kunRuntimeHealthMonitor.waitForHealthy(currentSettings, 2_000)
   if (healthy) {
     const threadApi = await probeThreadApi(currentSettings)
     if (threadApi.ok) {
@@ -1007,7 +956,7 @@ async function ensureKunRuntime(settings: AppSettingsV1): Promise<AppSettingsV1>
     if (kunRuntimeAdapter.isChildRunning()) {
       // Give a merely-busy runtime a real chance to answer before judging it
       // hung, so one long synchronous step does not cost the user their turn.
-      const recovered = await waitForKunHealth(currentSettings, RUNTIME_HUNG_CONFIRM_MS)
+      const recovered = await kunRuntimeHealthMonitor.waitForHealthy(currentSettings, RUNTIME_HUNG_CONFIRM_MS)
       if (recovered) {
         const threadApi = await probeThreadApi(currentSettings)
         if (threadApi.ok) {
@@ -1032,7 +981,7 @@ async function ensureKunRuntime(settings: AppSettingsV1): Promise<AppSettingsV1>
     console.error('[kun-gui] failed to start kun:', e)
     throw e
   }
-  const started = await waitForKunHealth(launchSettings, 20_000)
+  const started = await kunRuntimeHealthMonitor.waitForHealthy(launchSettings, 20_000)
   if (!started) {
     throw runtimeJsonError(
       'runtime_unhealthy',
@@ -1049,7 +998,7 @@ async function ensureKunRuntime(settings: AppSettingsV1): Promise<AppSettingsV1>
 }
 
 async function restartRuntime(settings: AppSettingsV1): Promise<void> {
-  return runtimeOperations.restart(() => restartRuntimeOnce(settings))
+  return runtimeSupervisor.restart(() => restartRuntimeOnce(settings))
 }
 
 async function restartRuntimeOnce(settings: AppSettingsV1): Promise<void> {
@@ -1084,7 +1033,7 @@ async function restartRuntimeOnce(settings: AppSettingsV1): Promise<void> {
     throw e
   }
 
-  const healthy = await waitForKunHealth(launchSettings, 20_000)
+  const healthy = await kunRuntimeHealthMonitor.waitForHealthy(launchSettings, 20_000)
   if (!healthy) {
     throw runtimeJsonError(
       'runtime_unhealthy',
@@ -1337,7 +1286,7 @@ async function restartManagedRuntimeForSettingsChange(
   try {
     const launchSettings = await resolveManagedKunLaunchSettings(next, 'settings-apply')
     await adapter.ensureRunning(launchSettings)
-    const healthy = await waitForKunHealth(launchSettings, 20_000)
+    const healthy = await kunRuntimeHealthMonitor.waitForHealthy(launchSettings, 20_000)
     if (!healthy) {
       throw new Error('Kun did not become healthy after the settings change')
     }
@@ -1367,7 +1316,7 @@ async function rollbackRuntimeSettingsAfterFailedApply(
       agents: { kun: getKunRuntimeSettings(prev) },
       provider: prev.provider
     })
-    runtimeOperations.noteLatest(base)
+    runtimeSupervisor.noteLatest(base)
   } catch (error) {
     logWarn('settings-apply', 'failed to restore previous runtime settings on disk', {
       message: error instanceof Error ? error.message : String(error)
@@ -1385,7 +1334,7 @@ async function rollbackRuntimeSettingsAfterFailedApply(
   try {
     const launchSettings = await resolveManagedKunLaunchSettings(base, 'settings-apply-rollback')
     await adapter.ensureRunning(launchSettings)
-    const healthy = await waitForKunHealth(launchSettings, 20_000)
+    const healthy = await kunRuntimeHealthMonitor.waitForHealthy(launchSettings, 20_000)
     if (!healthy) {
       throw new Error('previous configuration did not become healthy')
     }
@@ -1426,7 +1375,7 @@ async function restartManagedRuntimeForMcpConfigChange(settings: AppSettingsV1):
   try {
     const launchSettings = await resolveManagedKunLaunchSettings(settings, 'mcp-config')
     await adapter.ensureRunning(launchSettings)
-    const healthy = await waitForKunHealth(launchSettings, 20_000)
+    const healthy = await kunRuntimeHealthMonitor.waitForHealthy(launchSettings, 20_000)
     if (!healthy) {
       throw new Error('Kun did not become healthy after the MCP config change')
     }
@@ -1447,7 +1396,7 @@ async function waitForManagedRuntimeReadyBeforeStop(
   settings: AppSettingsV1,
   source: string
 ): Promise<void> {
-  const healthy = await waitForKunHealth(settings, 20_000)
+  const healthy = await kunRuntimeHealthMonitor.waitForHealthy(settings, 20_000)
   if (!healthy) {
     logWarn(source, 'Kun did not become healthy before a managed restart; stopping it anyway')
     return

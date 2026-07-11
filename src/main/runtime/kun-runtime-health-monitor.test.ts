@@ -4,6 +4,7 @@ import type { ChildProcess } from 'node:child_process'
 import { describe, expect, it, vi } from 'vitest'
 import {
   describeKunStartupTimeout,
+  KunRuntimeHealthMonitor,
   resolveKunStartupTimeoutMs,
   waitForKunStartup
 } from './kun-runtime-health-monitor'
@@ -54,5 +55,43 @@ describe('Kun runtime health monitor', () => {
     expect(describeKunStartupTimeout(60_000, 'stderr', false)).toBe(
       'Kun did not report ready within 60000ms\nstderr'
     )
+  })
+
+  it('single-flights concurrent post-start probes for one runtime endpoint', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const fetchRuntime = vi.fn(async () => {
+      await gate
+      return new Response('{"status":"ok","service":"kun","mode":"serve"}', { status: 200 })
+    })
+    const monitor = new KunRuntimeHealthMonitor({
+      runtimeBaseUrl: () => 'http://127.0.0.1:18899',
+      runtimeHeaders: () => new Headers(),
+      warn: vi.fn(),
+      fetch: fetchRuntime
+    })
+
+    const first = monitor.probeOnce({})
+    const second = monitor.probeOnce({})
+    expect(second).toBe(first)
+    release()
+    await expect(first).resolves.toEqual({ healthy: true, error: '' })
+    expect(fetchRuntime).toHaveBeenCalledOnce()
+  })
+
+  it('uses the same monitor for bounded watchdog health waits', async () => {
+    const warn = vi.fn()
+    const monitor = new KunRuntimeHealthMonitor({
+      runtimeBaseUrl: () => 'http://127.0.0.1:18899',
+      runtimeHeaders: () => new Headers({ authorization: 'Bearer token' }),
+      warn,
+      fetch: vi.fn(async () => new Response(
+        '{"status":"ok","service":"kun","mode":"serve"}',
+        { status: 200 }
+      ))
+    })
+
+    await expect(monitor.waitForHealthy({}, 1_000)).resolves.toBe(true)
+    expect(warn).not.toHaveBeenCalled()
   })
 })

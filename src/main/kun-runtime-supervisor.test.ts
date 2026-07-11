@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   KunRuntimeSupervisor,
   MAX_RESTART_DELAY_MS,
@@ -112,7 +112,6 @@ describe('KunRuntimeSupervisor', () => {
       },
       checkHealth: async () => overrides.healthy ?? false,
       isChildRunning: () => true,
-      isOperationPending: () => false,
       isStopped: () => overrides.stopped ?? false,
       publish: (status: KunRuntimeStatus) => { statuses.push(status) },
       warn: () => undefined,
@@ -148,5 +147,40 @@ describe('KunRuntimeSupervisor', () => {
     await h.supervisor.watchdogTick()
     await h.supervisor.watchdogTick()
     expect(h.statuses.at(-1)).toMatchObject({ state: 'failed', source: 'watchdog' })
+  })
+
+  it('owns single-flight ensure operations for one runtime fingerprint', async () => {
+    const h = harness()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const operation = vi.fn(async () => {
+      await gate
+      return { autoStart: true }
+    })
+
+    const first = h.supervisor.ensure('fingerprint', operation)
+    const second = h.supervisor.ensure('fingerprint', operation)
+    release()
+
+    await expect(first).resolves.toEqual({ autoStart: true })
+    await expect(second).resolves.toEqual({ autoStart: true })
+    expect(operation).toHaveBeenCalledOnce()
+  })
+
+  it('serializes settings apply and suppresses watchdog recovery while it is pending', async () => {
+    const h = harness()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const onError = vi.fn()
+    h.supervisor.enqueueSettingsApply(() => gate, onError)
+
+    await vi.waitFor(() => expect(h.supervisor.hasPendingOperation()).toBe(true))
+    await h.supervisor.watchdogTick()
+    expect(h.statuses).toEqual([])
+
+    release()
+    await h.supervisor.waitForSettingsApply()
+    expect(h.supervisor.hasPendingOperation()).toBe(false)
+    expect(onError).not.toHaveBeenCalled()
   })
 })
