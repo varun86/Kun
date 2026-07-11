@@ -46,6 +46,7 @@ import {
 import { resolveCodexOAuthApiKey } from './codex-auth'
 import { createWorkflowExecutionPlan, selectWorkflowTrigger } from './workflow-graph-planner'
 import { WorkflowRunCoordinator } from './workflow-run-coordinator'
+import { WorkflowScheduler } from './workflow-scheduler'
 
 const MAX_NODE_EXECUTIONS = 200
 const MAX_RUN_DURATION_MS = 30 * 60_000
@@ -928,8 +929,8 @@ function summarizeWorkflowForAgent(workflow: WorkflowV1): string {
 
 export class WorkflowRuntime {
   private readonly deps: ScheduleRuntimeDeps
-  private scheduler: ReturnType<typeof setInterval> | null = null
   private readonly runCoordinator = new WorkflowRunCoordinator()
+  private readonly scheduler: WorkflowScheduler
   /** Recursion guard: true while a hook-triggered workflow is running, so its own
    * tool calls (via AI-agent nodes) don't re-trigger hooks and loop forever. */
   private hookRunActive = false
@@ -939,6 +940,10 @@ export class WorkflowRuntime {
 
   constructor(deps: ScheduleRuntimeDeps) {
     this.deps = deps
+    this.scheduler = new WorkflowScheduler({
+      intervalMs: SCHEDULER_INTERVAL_MS,
+      tick: () => this.tick()
+    })
   }
 
   sync(settings: AppSettingsV1): void {
@@ -949,10 +954,7 @@ export class WorkflowRuntime {
   }
 
   stop(): void {
-    if (this.scheduler) {
-      clearInterval(this.scheduler)
-      this.scheduler = null
-    }
+    this.scheduler.stop()
     this.stopPowerSaveBlocker()
     this.closeWebhookServer()
   }
@@ -1340,12 +1342,7 @@ export class WorkflowRuntime {
   }
 
   private startScheduler(): void {
-    if (this.scheduler) return
-    this.scheduler = setInterval(() => {
-      void this.tick()
-    }, SCHEDULER_INTERVAL_MS)
-    this.scheduler.unref?.()
-    void this.tick()
+    this.scheduler.start()
   }
 
   private async tick(): Promise<void> {
