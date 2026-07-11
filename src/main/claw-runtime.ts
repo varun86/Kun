@@ -83,13 +83,12 @@ import { authorizeImGeneratedFiles } from './im-attachment-pipeline'
 import { FeishuTransportAdapter } from './feishu-transport-adapter'
 import { WeixinTransportAdapter } from './weixin-transport-adapter'
 import { ImTransportRouter } from './im-transport-router'
+import {
+  handleTelegramInbound,
+  type ImIncomingRemoteSession
+} from './telegram-inbound-coordinator'
 
-const CLAW_TELEGRAM_INBOUND_IMAGE_HEADING = '[Telegram inbound message]'
-
-type IncomingRemoteSession = Pick<
-  ClawImRemoteSessionV1,
-  'chatId' | 'messageId' | 'threadId' | 'senderId' | 'senderName'
->
+type IncomingRemoteSession = ImIncomingRemoteSession
 
 
 function isMissingThreadResult(result: { ok: boolean; status: number; body: string }): boolean {
@@ -2107,176 +2106,34 @@ export class ClawRuntime {
    * Telegram's chat-id/message-id scheme and image attachments.
    */
   async handleTelegramUpdate(payload: TelegramInboundPayload): Promise<void> {
-    const settings = await this.deps.store.load()
-    const channel = settings.claw.channels.find((item) => item.id === payload.channelId && item.enabled)
-    if (!channel || channel.provider !== 'telegram') return
-    if (!this.deps.telegramRuntime?.has(channel.id)) return
-
-    const remoteSession: IncomingRemoteSession = {
-      chatId: payload.chatId,
-      messageId: payload.messageId,
-      threadId: '',
-      senderId: payload.senderId,
-      senderName: payload.senderName
-    }
-    const conversation = this.findChannelConversation(channel, {
-      chatId: remoteSession.chatId,
-      threadId: remoteSession.threadId
+    return handleTelegramInbound(payload, {
+      loadSettings: () => this.deps.store.load(),
+      telegramRuntime: this.deps.telegramRuntime,
+      resolveIncomingWorkspaceRoot: (settings, channel, conversation, remoteSession) =>
+        this.resolveIncomingWorkspaceRoot(settings, channel, conversation, remoteSession),
+      resolveChannelWorkspaceRoot: (settings, channel) =>
+        this.resolveChannelWorkspaceRoot(settings, channel),
+      pendingWelcomeText: (settings, channel) => this.pendingWelcomeText(settings, channel),
+      beginWelcome: (channelId) => {
+        this.welcomeInFlight.add(channelId)
+      },
+      endWelcome: (channelId) => {
+        this.welcomeInFlight.delete(channelId)
+      },
+      markWelcomeSent: (channelId) => this.markChannelWelcomeSent(channelId),
+      handleCommand: (settings, input) => this.handleIncomingImCommandSafely(settings, input),
+      resolveModel: (settings, channel, conversation) => {
+        const resolution = currentImModelResolution(settings, channel, conversation)
+        return { providerId: resolution.provider.id, model: resolution.model }
+      },
+      createScheduledTaskFromText: this.deps.createScheduledTaskFromText,
+      processPrompt: (settings, input) => this.processIncomingImPrompt(settings, input),
+      scheduleResultPush: (settings, input) => this.scheduleImResultPush(settings, input),
+      resolveGeneratedFiles: (files, workspaceRoot, context) =>
+        this.resolveImGeneratedFiles(files, workspaceRoot, context),
+      formatError: imKunErrorText,
+      logError: this.deps.logError
     })
-    const workspaceRoot = this.resolveIncomingWorkspaceRoot(settings, channel, conversation, remoteSession)
-    const text = payload.text.trim()
-    const localFilePath = payload.localFilePath?.trim() || ''
-
-    // First inbound on a freshly connected Telegram bot: send the intro
-    // ahead of the (slow) model reply, mirroring the WeChat/Feishu path.
-    const welcomeText = this.pendingWelcomeText(settings, channel)
-    if (welcomeText) {
-      this.welcomeInFlight.add(channel.id)
-      try {
-        const pushed = await this.pushTelegramWelcome(channel, remoteSession, welcomeText)
-        if (!pushed) {
-          // Fallback: prepend to the reply once the turn finishes.
-        }
-        await this.markChannelWelcomeSent(channel.id)
-      } catch (error) {
-        this.deps.logError('claw-telegram', 'Failed to send the Telegram welcome message; it will be retried on the next inbound message.', {
-          message: errorMessage(error),
-          channelId: channel.id,
-          chatId: remoteSession.chatId
-        })
-      } finally {
-        this.welcomeInFlight.delete(channel.id)
-      }
-    }
-
-    const commandReply = await this.handleIncomingImCommandSafely(settings, {
-      text,
-      channel,
-      conversation,
-      remoteSession
-    })
-    if (commandReply !== null) {
-      await this.deps.telegramRuntime!.sendMessage(channel.id, remoteSession.chatId, commandReply)
-      return
-    }
-
-    const modelResolution = currentImModelResolution(settings, channel, conversation)
-    const taskCreation = await this.deps.createScheduledTaskFromText?.(text, {
-      workspaceRoot: this.resolveChannelWorkspaceRoot(settings, channel),
-      clawChannelId: channel.id,
-      providerId: modelResolution.provider.id,
-      modelHint: modelResolution.model,
-      mode: settings.claw.im.mode
-    }) ?? { kind: 'noop' as const }
-    if (taskCreation.kind === 'created') {
-      await this.deps.telegramRuntime!.sendMessage(channel.id, remoteSession.chatId, taskCreation.confirmationText)
-      return
-    }
-    if (taskCreation.kind === 'error') {
-      await this.deps.telegramRuntime!.sendMessage(
-        channel.id,
-        remoteSession.chatId,
-        imKunErrorText(settings, `Failed to create the scheduled task: ${taskCreation.message}`)
-      )
-      return
-    }
-
-    // Build the prompt: a heading for image/attachment context, then the user text.
-    // Image content is surfaced as a text note — full attachment upload into the
-    // Kun runtime attachment store is a follow-up. The downloaded file path is
-    // already on disk (in the OS temp dir) for future localFilePath wiring.
-    const promptText = localFilePath && !text
-      ? `${CLAW_TELEGRAM_INBOUND_IMAGE_HEADING}\nSender: ${payload.senderName}\n\n[image attachment]`
-      : localFilePath
-        ? `${CLAW_TELEGRAM_INBOUND_IMAGE_HEADING}\nSender: ${payload.senderName}\n\n${text}`
-        : text
-    if (!promptText.trim()) {
-      await this.deps.telegramRuntime!.sendMessage(channel.id, remoteSession.chatId, 'Only text and image messages are supported right now.')
-      return
-    }
-
-    const result = await this.processIncomingImPrompt(settings, {
-      prompt: promptText,
-      sender: payload.senderName,
-      provider: 'telegram',
-      channel,
-      conversation,
-      remoteSession
-    })
-    if (!result.ok) {
-      this.deps.logError('claw-telegram', 'Telegram inbound prompt failed.', {
-        channelId: channel.id,
-        chatId: remoteSession.chatId,
-        message: result.message
-      })
-      await this.deps.telegramRuntime!.sendMessage(
-        channel.id,
-        remoteSession.chatId,
-        imKunErrorText(settings, `处理失败：${result.message}`)
-      )
-      return
-    }
-    if (result.completed === false) {
-      // Turn outran the response window: ack now, push the real answer later.
-      this.scheduleImResultPush(settings, {
-        channel,
-        remoteSession,
-        threadId: result.threadId,
-        turnId: result.turnId,
-        workspaceRoot
-      })
-      await this.deps.telegramRuntime!.sendMessage(channel.id, remoteSession.chatId, IM_PROCESSING_ACK)
-      return
-    }
-    const generatedFiles = result.files ?? []
-    const filesToSend = generatedFiles.length > 0 || shouldSendGeneratedFilesForPrompt(promptText)
-      ? await this.resolveImGeneratedFiles(generatedFiles, workspaceRoot, {
-          purpose: 'telegram-agent-file-resolve',
-          channelId: channel.id,
-          chatId: remoteSession.chatId,
-          inboundMessageId: remoteSession.messageId,
-          threadId: result.threadId,
-          turnId: result.turnId
-        })
-      : []
-    const reply = replyTextForGeneratedFiles(
-      (result.text ?? '').trim() || IM_COMPLETED_NO_TEXT_REPLY,
-      filesToSend
-    )
-    await this.deps.telegramRuntime!.sendMessage(channel.id, remoteSession.chatId, reply)
-    for (const file of filesToSend) {
-      const delivery = await this.deps.telegramRuntime!.sendFile(channel.id, remoteSession.chatId, file.path, file.fileName)
-      if (!delivery.ok) {
-        await this.deps.telegramRuntime!.sendMessage(
-          channel.id,
-          remoteSession.chatId,
-          imKunErrorText(settings, `Telegram 附件发送失败：${delivery.message}`)
-        )
-      }
-    }
-  }
-
-  /**
-   * Pushes the one-time channel intro as its own Telegram bubble. Returns
-   * false when the channel cannot push (missing runtime/recipient) so the
-   * caller can fall back to prepending the text to the HTTP reply.
-   */
-  private async pushTelegramWelcome(
-    channel: ClawImChannelV1,
-    remoteSession: IncomingRemoteSession | undefined,
-    text: string
-  ): Promise<boolean> {
-    if (channel.provider !== 'telegram' || !this.deps.telegramRuntime) return false
-    const to = remoteSession?.chatId.trim() || channel.remoteSession?.chatId.trim() || ''
-    if (!to) return false
-    const result = await this.deps.telegramRuntime.sendMessage(channel.id, to, text)
-    if (!result.ok) {
-      this.deps.logError('claw-telegram', 'Failed to push the Telegram welcome message; prepending it to the reply instead.', {
-        channelId: channel.id,
-        message: result.message
-      })
-    }
-    return result.ok
   }
 
   private async handleFeishuMessage(channelId: string, message: NormalizedMessage): Promise<void> {
