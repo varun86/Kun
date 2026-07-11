@@ -1,18 +1,9 @@
 import { mkdir, open, readdir, rename, rm, stat } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import type { Database as BetterSqliteDatabase, Statement } from 'better-sqlite3'
-import type {
-  ThreadGoal,
-  ThreadMode,
-  ThreadRecord,
-  ThreadRelation,
-  ThreadStatus,
-  ThreadTodoList,
-  ThreadSummary
-} from '../../contracts/threads.js'
+import type { ThreadRecord, ThreadSummary } from '../../contracts/threads.js'
 import type { RuntimeEvent } from '../../contracts/events.js'
 import type { TurnItem } from '../../contracts/items.js'
-import type { ApprovalPolicy, SandboxMode } from '../../contracts/policy.js'
 import type { ThreadStore, ThreadStoreListOptions } from '../../ports/thread-store.js'
 import type { SessionLatestUsageSnapshot, SessionUsageRecord } from '../../ports/session-store.js'
 import { toThreadSummary } from '../../domain/thread.js'
@@ -25,46 +16,13 @@ import {
 } from '../../contracts/usage.js'
 import { stripThreadItemBodies, type ThreadMetadataLine } from './hybrid-thread-projection.js'
 import { HybridThreadDocumentRepository } from './hybrid-thread-documents.js'
-
-type ThreadRow = {
-  id: string
-  title: string
-  workspace: string
-  model: string
-  mode: ThreadMode
-  status: ThreadStatus
-  approval_policy: ApprovalPolicy
-  sandbox_mode: SandboxMode
-  cost_budget_usd: number | null
-  cost_budget_warning_sent: number | null
-  relation: ThreadRelation
-  parent_thread_id: string | null
-  forked_from_thread_id: string | null
-  forked_from_title: string | null
-  forked_at: string | null
-  forked_from_message_count: number | null
-  forked_from_turn_count: number | null
-  goal_json: string | null
-  todos_json: string | null
-  created_at: string
-  updated_at: string
-  created_at_ms: number
-  updated_at_ms: number
-  preview: string | null
-  message_count: number
-  event_seq_high_water: number
-  metadata_path: string
-  messages_path: string
-  events_path: string
-  search_text: string
-}
-
-type ThreadIndexRecord = {
-  thread: ThreadRecord
-  messageCount: number
-  eventSeqHighWater: number
-  preview: string
-}
+import {
+  filterThreadSummaries,
+  summaryFromRow,
+  type ThreadIndexRecord,
+  type ThreadRow
+} from './hybrid-thread-index-mapping.js'
+import { HybridThreadIndexRepository } from './hybrid-thread-index.js'
 
 type UsageRuntimeEvent = Extract<RuntimeEvent, { kind: 'usage' }>
 
@@ -90,6 +48,7 @@ export class HybridThreadStore implements ThreadStore {
   private readonly metadataQueues = new Map<string, Promise<void>>()
   private backfillPromise: Promise<void> | null = null
   private db: BetterSqliteDatabase | null = null
+  private index: HybridThreadIndexRepository | null = null
   // Prepared-statement cache for the per-event hot paths; better-sqlite3
   // re-compiles the SQL on every prepare() call otherwise.
   private readonly statementCache = new Map<string, Statement>()
@@ -115,6 +74,7 @@ export class HybridThreadStore implements ThreadStore {
       this.db?.close()
     } finally {
       this.db = null
+      this.index = null
     }
   }
 
@@ -307,6 +267,10 @@ export class HybridThreadStore implements ThreadStore {
       this.db.pragma('busy_timeout = 5000')
       this.db.pragma('foreign_keys = ON')
       this.migrate()
+      this.index = new HybridThreadIndexRepository(this.db, (threadId) => ({
+        metadataPath: this.metadataPath(threadId), messagesPath: this.messagesPath(threadId),
+        eventsPath: this.eventsPath(threadId)
+      }), warnSqlite)
       this.startBackfill()
     } catch (error) {
       warnSqlite('initialize', error)
@@ -316,6 +280,7 @@ export class HybridThreadStore implements ThreadStore {
         // Ignore close errors while falling back to JSONL scanning.
       }
       this.db = null
+      this.index = null
     }
   }
 
@@ -497,121 +462,19 @@ export class HybridThreadStore implements ThreadStore {
   }
 
   private queryThreadRows(options: ThreadStoreListOptions): ThreadRow[] {
-    if (!this.db) return []
-    const where: string[] = []
-    const params: Record<string, unknown> = {}
-    if (options.archivedOnly) {
-      where.push('status = @archivedStatus')
-      params.archivedStatus = 'archived'
-    } else if (!options.includeArchived) {
-      where.push("status NOT IN ('archived', 'deleted')")
-    }
-    if (!options.includeSide) {
-      where.push("relation != 'side'")
-    }
-    const search = options.search?.trim().toLowerCase()
-    if (search) {
-      where.push("search_text LIKE @search ESCAPE '\\'")
-      params.search = `%${escapeLike(search)}%`
-    }
-    const limit = typeof options.limit === 'number' ? Math.max(1, Math.floor(options.limit)) : undefined
-    if (limit !== undefined) {
-      params.limit = limit
-    }
-    const sql = `
-      SELECT * FROM threads
-      ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-      ORDER BY updated_at_ms DESC, id DESC
-      ${limit !== undefined ? 'LIMIT @limit' : ''}
-    `
-    return this.db.prepare(sql).all(params) as ThreadRow[]
+    return this.index?.query(options) ?? []
   }
 
   private findRow(threadId: string): ThreadRow | null {
-    if (!this.db) return null
-    try {
-      return (this.db.prepare('SELECT * FROM threads WHERE id = ?').get(threadId) as ThreadRow | undefined) ?? null
-    } catch (error) {
-      warnSqlite('find row', error)
-      return null
-    }
+    return this.index?.find(threadId) ?? null
   }
 
   private upsertIndexBestEffort(record: ThreadIndexRecord): void {
-    if (!this.db) return
-    try {
-      const row = rowFromIndexRecord(record, {
-        metadataPath: this.metadataPath(record.thread.id),
-        messagesPath: this.messagesPath(record.thread.id),
-        eventsPath: this.eventsPath(record.thread.id)
-      })
-      this.db
-        .prepare(`
-          INSERT INTO threads (
-            id, title, workspace, model, mode, status, approval_policy, sandbox_mode,
-            cost_budget_usd, cost_budget_warning_sent, relation, parent_thread_id,
-            forked_from_thread_id, forked_from_title, forked_at, forked_from_message_count,
-            forked_from_turn_count, goal_json, todos_json, created_at, updated_at, created_at_ms,
-            updated_at_ms, preview, message_count, event_seq_high_water, metadata_path,
-            messages_path, events_path, search_text
-          )
-          VALUES (
-            @id, @title, @workspace, @model, @mode, @status, @approval_policy, @sandbox_mode,
-            @cost_budget_usd, @cost_budget_warning_sent, @relation, @parent_thread_id,
-            @forked_from_thread_id, @forked_from_title, @forked_at, @forked_from_message_count,
-            @forked_from_turn_count, @goal_json, @todos_json, @created_at, @updated_at, @created_at_ms,
-            @updated_at_ms, @preview, @message_count, @event_seq_high_water, @metadata_path,
-            @messages_path, @events_path, @search_text
-          )
-          ON CONFLICT(id) DO UPDATE SET
-            title = excluded.title,
-            workspace = excluded.workspace,
-            model = excluded.model,
-            mode = excluded.mode,
-            status = excluded.status,
-            approval_policy = excluded.approval_policy,
-            sandbox_mode = excluded.sandbox_mode,
-            cost_budget_usd = excluded.cost_budget_usd,
-            cost_budget_warning_sent = excluded.cost_budget_warning_sent,
-            relation = excluded.relation,
-            parent_thread_id = excluded.parent_thread_id,
-            forked_from_thread_id = excluded.forked_from_thread_id,
-            forked_from_title = excluded.forked_from_title,
-            forked_at = excluded.forked_at,
-            forked_from_message_count = excluded.forked_from_message_count,
-            forked_from_turn_count = excluded.forked_from_turn_count,
-            goal_json = excluded.goal_json,
-            todos_json = excluded.todos_json,
-            created_at = excluded.created_at,
-            updated_at = excluded.updated_at,
-            created_at_ms = excluded.created_at_ms,
-            updated_at_ms = excluded.updated_at_ms,
-            preview = excluded.preview,
-            message_count = excluded.message_count,
-            event_seq_high_water = CASE
-              WHEN threads.event_seq_high_water > excluded.event_seq_high_water
-                THEN threads.event_seq_high_water
-              ELSE excluded.event_seq_high_water
-            END,
-            metadata_path = excluded.metadata_path,
-            messages_path = excluded.messages_path,
-            events_path = excluded.events_path,
-            search_text = excluded.search_text
-        `)
-        .run(row)
-    } catch (error) {
-      warnSqlite('upsert index', error)
-    }
+    this.index?.upsert(record)
   }
 
   private deleteIndexRow(threadId: string): void {
-    if (!this.db) return
-    try {
-      this.db.prepare('DELETE FROM threads WHERE id = ?').run(threadId)
-      this.db.prepare('DELETE FROM usage_events WHERE thread_id = ?').run(threadId)
-    } catch (error) {
-      warnSqlite('delete index row', error)
-    }
+    this.index?.delete(threadId)
   }
 
   private async appendMetadata(thread: ThreadRecord): Promise<void> {
@@ -772,141 +635,6 @@ export class HybridThreadStore implements ThreadStore {
   }
 }
 
-function rowFromIndexRecord(
-  record: ThreadIndexRecord,
-  paths: { metadataPath: string; messagesPath: string; eventsPath: string }
-): ThreadRow {
-  const thread = record.thread
-  return {
-    id: thread.id,
-    title: thread.title,
-    workspace: thread.workspace,
-    model: thread.model,
-    mode: thread.mode,
-    status: thread.status,
-    approval_policy: thread.approvalPolicy,
-    sandbox_mode: thread.sandboxMode,
-    cost_budget_usd: thread.costBudgetUsd ?? null,
-    cost_budget_warning_sent: thread.costBudgetWarningSent === undefined
-      ? null
-      : thread.costBudgetWarningSent
-        ? 1
-        : 0,
-    relation: thread.relation ?? 'primary',
-    parent_thread_id: thread.parentThreadId ?? null,
-    forked_from_thread_id: thread.forkedFromThreadId ?? null,
-    forked_from_title: thread.forkedFromTitle ?? null,
-    forked_at: thread.forkedAt ?? null,
-    forked_from_message_count: thread.forkedFromMessageCount ?? null,
-    forked_from_turn_count: thread.forkedFromTurnCount ?? null,
-    goal_json: thread.goal ? JSON.stringify(thread.goal) : null,
-    todos_json: thread.todos ? JSON.stringify(thread.todos) : null,
-    created_at: thread.createdAt,
-    updated_at: thread.updatedAt,
-    created_at_ms: isoToMillis(thread.createdAt),
-    updated_at_ms: isoToMillis(thread.updatedAt),
-    preview: record.preview || null,
-    message_count: record.messageCount,
-    event_seq_high_water: record.eventSeqHighWater,
-    metadata_path: paths.metadataPath,
-    messages_path: paths.messagesPath,
-    events_path: paths.eventsPath,
-    search_text: searchTextForThread(thread, record.preview)
-  }
-}
-
-function summaryFromRow(row: ThreadRow): ThreadSummary {
-  const goal = parseGoal(row.goal_json)
-  const todos = parseTodos(row.todos_json)
-  return {
-    id: row.id,
-    title: row.title,
-    workspace: row.workspace,
-    model: row.model,
-    mode: row.mode,
-    status: row.status,
-    approvalPolicy: row.approval_policy,
-    sandboxMode: row.sandbox_mode,
-    ...(row.cost_budget_usd !== null ? { costBudgetUsd: row.cost_budget_usd } : {}),
-    ...(row.cost_budget_warning_sent !== null ? { costBudgetWarningSent: Boolean(row.cost_budget_warning_sent) } : {}),
-    relation: row.relation,
-    ...(row.parent_thread_id ? { parentThreadId: row.parent_thread_id } : {}),
-    ...(row.forked_from_thread_id ? { forkedFromThreadId: row.forked_from_thread_id } : {}),
-    ...(row.forked_from_title ? { forkedFromTitle: row.forked_from_title } : {}),
-    ...(row.forked_at ? { forkedAt: row.forked_at } : {}),
-    ...(row.forked_from_message_count !== null ? { forkedFromMessageCount: row.forked_from_message_count } : {}),
-    ...(row.forked_from_turn_count !== null ? { forkedFromTurnCount: row.forked_from_turn_count } : {}),
-    ...(goal ? { goal } : {}),
-    ...(todos ? { todos } : {}),
-    createdAt: row.created_at,
-    updatedAt: row.updated_at
-  }
-}
-
-function parseGoal(raw: string | null): ThreadGoal | null {
-  if (!raw) return null
-  try {
-    return JSON.parse(raw) as ThreadGoal
-  } catch {
-    return null
-  }
-}
-
-function parseTodos(raw: string | null): ThreadTodoList | null {
-  if (!raw) return null
-  try {
-    return JSON.parse(raw) as ThreadTodoList
-  } catch {
-    return null
-  }
-}
-
-function filterThreadSummaries(
-  summaries: ThreadSummary[],
-  options: ThreadStoreListOptions
-): ThreadSummary[] {
-  const query = options.search?.trim().toLowerCase()
-  let out = summaries
-  if (options.archivedOnly) {
-    out = out.filter((thread) => thread.status === 'archived')
-  } else if (!options.includeArchived) {
-    out = out.filter((thread) => thread.status !== 'archived' && thread.status !== 'deleted')
-  }
-  if (!options.includeSide) {
-    out = out.filter((thread) => (thread.relation ?? 'primary') !== 'side')
-  }
-  if (query) {
-    out = out.filter((thread) => searchTextForSummary(thread).includes(query))
-  }
-  return typeof options.limit === 'number' ? out.slice(0, options.limit) : out
-}
-
-function searchTextForThread(thread: ThreadRecord, _preview: string): string {
-  return [
-    thread.id,
-    thread.title,
-    thread.workspace,
-    thread.model,
-    thread.mode,
-    thread.forkedFromTitle,
-    thread.forkedFromThreadId,
-    ...(thread.todos?.items.map((item) => item.content) ?? [])
-  ].filter(Boolean).join('\n').toLowerCase()
-}
-
-function searchTextForSummary(thread: ThreadSummary): string {
-  return [
-    thread.id,
-    thread.title,
-    thread.workspace,
-    thread.model,
-    thread.mode,
-    thread.forkedFromTitle,
-    thread.forkedFromThreadId,
-    ...(thread.todos?.items.map((item) => item.content) ?? [])
-  ].filter(Boolean).join('\n').toLowerCase()
-}
-
 function previewFromItems(items: TurnItem[]): string {
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index]
@@ -1063,15 +791,6 @@ function hasUsage(usage: UsageSnapshot): boolean {
     || (usage.tokenEconomySavingsTokens ?? 0) > 0
     || (usage.tokenEconomySavingsUsd ?? 0) > 0
     || (usage.tokenEconomySavingsCny ?? 0) > 0
-}
-
-function isoToMillis(value: string): number {
-  const millis = Date.parse(value)
-  return Number.isFinite(millis) ? millis : 0
-}
-
-function escapeLike(value: string): string {
-  return value.replace(/[%_]/g, (match) => `\\${match}`)
 }
 
 function addColumnIfMissing(db: BetterSqliteDatabase, table: string, columnSql: string): void {

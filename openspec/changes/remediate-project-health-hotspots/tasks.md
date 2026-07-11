@@ -74,7 +74,7 @@
 
 - [x] 7.1 Add golden existing-data fixtures covering SQLite index, JSONL history,
   legacy threads, backfill, archive/search, and usage recovery.
-- [ ] 7.2 Extract thread index repository and query/summary mapping.
+- [x] 7.2 Extract thread index repository and query/summary mapping.
 - [x] 7.3 Extract thread document/legacy readers and recovery precedence.
 - [x] 7.4 Extract thread projection assembler and turn/item merge rules.
 - [ ] 7.5 Extract backfill coordination and lifecycle/error reporting.
