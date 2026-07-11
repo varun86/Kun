@@ -6,7 +6,7 @@ import type {
 } from '../shared/app-settings'
 import type { TelegramRuntime } from './telegram-runtime'
 import type { FeishuTransportAdapter } from './feishu-transport-adapter'
-import type { WeixinTransportAdapter } from './weixin-transport-adapter'
+import type { WeixinRemoteSession, WeixinTransportAdapter } from './weixin-transport-adapter'
 import { formatFeishuMirrorText } from './claw-runtime-helpers'
 
 type RemoteRecipient = Pick<ClawImRemoteSessionV1, 'chatId'>
@@ -25,6 +25,29 @@ export class ImTransportRouter {
     if (channel.provider === 'weixin') return this.deps.weixin.canSend(channel)
     if (channel.provider === 'telegram') return Boolean(this.deps.telegram?.has(channel.id))
     return false
+  }
+
+  legacyRemoteSession(
+    provider: ClawImChannelV1['provider'],
+    payload: Record<string, unknown>,
+    sender: string
+  ): WeixinRemoteSession | null {
+    return provider === 'weixin' ? this.deps.weixin.legacyRemoteSession(payload, sender) : null
+  }
+
+  async pushWelcome(input: {
+    channel: ClawImChannelV1
+    remoteSession?: RemoteRecipient
+    text: string
+  }): Promise<boolean> {
+    if (input.channel.provider !== 'weixin') return false
+    const result = await this.deps.weixin.sendText({
+      channel: input.channel,
+      remoteSession: input.remoteSession,
+      text: input.text,
+      failureMessage: 'Failed to push the WeChat welcome message; prepending it to the reply instead.'
+    })
+    return result.ok
   }
 
   async sendText(input: {
